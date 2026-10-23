@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { Actor } from './actor.js';
 import { clamp, damp, lerp } from '../core/rng.js';
+import { ViewModel } from './viewmodel.js';
+import { SKIN_TONES } from './names.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _dir = new THREE.Vector3(), _o = new THREE.Vector3(), _t = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -22,7 +24,15 @@ export class Player extends Actor {
     this.leanDir = 0;
     this.aimPoint = new THREE.Vector3();
     this.sensitivity = 1;
+    this.view = new ViewModel(match.engine.vmCamera, { skin: this.rng.pick(SKIN_TONES), sleeve: this.model.accent || '#2b2b2b' });
+    this.view.setWeapon(this.weapon.def);
+    this.model.setVisible(false); // first person: own body hidden while alive
+    this.lastLook = { dx: 0, dy: 0 };
   }
+  muzzleWorld(out) { return this.alive ? this.view.muzzleWorld(out) : this.model.muzzleWorld(out); }
+  setLoadout(lo) { super.setLoadout(lo); if (this.view) this.view.setWeapon(this.weapon.def); }
+  setSingleWeapon(w) { super.setSingleWeapon(w); if (this.view) this.view.setWeapon(w); }
+  swapWeapon() { const before = this.cur; super.swapWeapon(); if (this.cur !== before && this.view) this.view.setWeapon(this.weapon.def); }
   onSpawn() { this.yaw = this.body.yaw; this.pitch = 0; this.recoilP = 0; this.recoilY = 0; this.adsBlend = 0; this.crouchToggle = false; this.leanDir = 0; this.snapCamera = true; }
   update(dt, input) {
     const m = this.match;
@@ -31,6 +41,7 @@ export class Player extends Actor {
     // ---- look ----
     const adsScale = this.adsBlend > 0.5 ? clamp(w.adsFov / this.fov, 0.25, 1) : 1;
     const sens = 0.0022 * this.sensitivity * adsScale;
+    this.lastLook = input.look;
     if (!this.frozen && this.fx.stun <= 0) { this.yaw -= input.look.dx * sens; this.pitch -= input.look.dy * sens; }
     else if (!this.frozen) { this.yaw -= input.look.dx * sens * 0.3; this.pitch -= input.look.dy * sens * 0.3; }
     this.pitch = clamp(this.pitch, -1.35, 1.35);
@@ -58,7 +69,7 @@ export class Player extends Actor {
     // ---- movement ----
     const mv = input.move; const len = Math.hypot(mv.x, mv.y); const mx = len > 1 ? mv.x / len : mv.x, my = len > 1 ? mv.y / len : mv.y;
     const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
-    _dir.set(sy * my + cy * mx, 0, cy * my - sy * mx);
+    _dir.set(sy * my - cy * mx, 0, cy * my + sy * mx);
     const base = this.sprint ? 7.2 : 5.3;
     let speed = base * this.effectiveSpeedMult();
     if (this.frozen) { _dir.set(0, 0, 0); speed = 0; }
@@ -81,6 +92,7 @@ export class Player extends Actor {
         this.recoilP += w.recoilV * 0.012 * kickMult; this.recoilY += (this.rng.next() - 0.5) * w.recoilH * 0.012 * kickMult;
         this.kickP += w.recoilV * 0.01; this.kickY += (this.rng.next() - 0.5) * w.recoilH * 0.01;
         this.pitch += w.recoilV * 0.0035 * kickMult; // permanent climb (COD-like)
+        this.view.onShot(w);
         this.camShake = Math.min(1, this.camShake + (w.type === 'sniper' || w.type === 'shotgun' ? 0.5 : 0.15));
       }
     } else if (trigger && this.weapon.mag === 0 && !this.reloading) { this.startReload(); }
@@ -103,37 +115,44 @@ export class Player extends Actor {
     this.adsBlend = damp(this.adsBlend, this.ads && this.alive ? 1 : 0, adsRate * 3.5, dt);
     const scoped = !!w.scope && this.adsBlend > 0.9;
     this.scopeOverlay = scoped;
-    const targetFov = lerp(this.fov, w.adsFov, this.adsBlend) + (this.sprint ? 4 : 0);
+    const targetFov = lerp(this.fov, w.adsFov, this.adsBlend) + (this.sprint ? 5 : 0);
     this.curFov = damp(this.curFov, targetFov, 14, dt);
     if (Math.abs(cam.fov - this.curFov) > 0.05) { cam.fov = this.curFov; cam.updateProjectionMatrix(); }
-    // pivot: eye + lean
     const eye = this.eye(new THREE.Vector3());
     const right = new THREE.Vector3(-Math.cos(this.yaw), 0, Math.sin(this.yaw));
-    const leanOff = this.model.lean * 0.5;
-    const pivot = eye.clone().addScaledVector(right, leanOff);
     const pitch = this.pitch + this.recoilP, yaw = this.yaw + this.recoilY;
     const fwd = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
-    // offsets
-    const back = lerp(2.6, 1.35, this.adsBlend) * (dead ? 1.6 : 1), side = lerp(0.75, 0.62, this.adsBlend), up = lerp(0.42, 0.26, this.adsBlend) - (this.body.crouch ? 0.15 : 0);
-    let desired = pivot.clone().addScaledVector(fwd, -back).addScaledVector(right, side).addScaledVector(UP, up);
-    if (scoped) desired = eye.clone().addScaledVector(fwd, 0.1);
-    // collision: pull camera in if blocked
-    const toCam = desired.clone().sub(pivot); const dist = toCam.length();
-    if (dist > 0.05 && !scoped) { const hit = m.map.world.raycast(pivot, toCam.clone().divideScalar(dist), dist + 0.25); if (hit) desired.copy(pivot).addScaledVector(toCam.divideScalar(dist), Math.max(0.2, hit.t - 0.25)); }
-    // smooth position (snappy but not rigid)
-    if (this.snapCamera) { this.camPos.copy(desired); this.snapCamera = false; } else this.camPos.lerp(desired, 1 - Math.exp(-dt * (scoped ? 60 : 22)));
-    // bob and shake
     this.camShake = damp(this.camShake, 0, 9, dt);
-    const bobA = this.moving && this.body.onGround ? (this.sprint ? 0.035 : 0.015) * (1 - this.adsBlend * 0.7) : 0;
-    const bob = new THREE.Vector3(Math.cos(this.bobPhase) * bobA, Math.abs(Math.sin(this.bobPhase)) * bobA * 1.2, 0);
+    if (dead) {
+      // death cam: pull back and look at the body
+      const pivot = new THREE.Vector3(this.body.pos.x, this.body.pos.y + 0.8, this.body.pos.z);
+      const desired = pivot.clone().addScaledVector(fwd, -3.2).add(new THREE.Vector3(0, 1.6, 0));
+      const toCam = desired.clone().sub(pivot); const dist = toCam.length();
+      const hit = m.map.world.raycast(pivot, toCam.clone().divideScalar(dist), dist + 0.25); if (hit) desired.copy(pivot).addScaledVector(toCam.divideScalar(dist), Math.max(0.3, hit.t - 0.25));
+      this.camPos.lerp(desired, 1 - Math.exp(-dt * 6));
+      cam.position.copy(this.camPos); cam.lookAt(pivot);
+      this.model.setVisible(true);
+      this.view.update(dt, { dead: true });
+      m.engine.updateSunTarget(this.body.pos);
+      return;
+    }
+    this.model.setVisible(false);
+    // lean: slide the eye sideways and roll the camera
+    const leanOff = this.model.lean * 0.45;
+    let desired = eye.clone().addScaledVector(right, leanOff);
+    if (leanOff !== 0) { const hit = m.map.world.raycast(eye, right.clone().multiplyScalar(Math.sign(leanOff)), Math.abs(leanOff) + 0.2); if (hit) desired.copy(eye).addScaledVector(right, Math.sign(leanOff) * Math.max(0, hit.t - 0.2)); }
+    if (this.snapCamera) { this.camPos.copy(desired); this.snapCamera = false; } else this.camPos.lerp(desired, 1 - Math.exp(-dt * 40));
+    // head bob + shake
+    const bobA = this.moving && this.body.onGround ? (this.sprint ? 0.045 : 0.018) * (1 - this.adsBlend * 0.8) : 0;
+    const bob = new THREE.Vector3().addScaledVector(right, Math.cos(this.bobPhase) * bobA * 0.6).add(new THREE.Vector3(0, Math.abs(Math.sin(this.bobPhase)) * bobA, 0));
     const shake = new THREE.Vector3((this.rng.next() - 0.5), (this.rng.next() - 0.5), 0).multiplyScalar(this.camShake * 0.03);
     cam.position.copy(this.camPos).add(bob).add(shake);
-    const look = pivot.clone().addScaledVector(fwd, 50);
-    cam.lookAt(look);
-    cam.rotateZ(-this.model.lean * 0.06 + this.kickY * 0.5);
+    cam.lookAt(cam.position.clone().add(fwd));
+    cam.rotateZ(-this.model.lean * 0.1 + this.kickY * 0.5 + Math.cos(this.bobPhase) * bobA * 0.3);
     cam.rotateX(this.kickP * 0.6);
-    // hide own model when scoped
-    this.model.setVisible(!scoped && !this.hidden);
+    cam.updateMatrixWorld();
+    const vc = m.engine.vmCamera; vc.position.copy(cam.position); vc.quaternion.copy(cam.quaternion); vc.updateMatrixWorld(true);
+    this.view.update(dt, { ads: this.ads, sprint: this.sprint, moving: this.moving, speed: this.speed, onGround: this.body.onGround, reloading: this.reloading, reloadT: this.reloadT, reloadTime: w.reload, look: this.lastLook, bobPhase: this.bobPhase, dead: false, hidden: scoped, lean: this.model.lean });
     m.engine.updateSunTarget(this.body.pos);
   }
 }

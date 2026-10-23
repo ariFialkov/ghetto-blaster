@@ -53,7 +53,7 @@ export class HUD {
     const flash = Math.min(1, p.fx.flash / 2.5); $('flash').style.opacity = flash.toFixed(2);
     this.dmgA = Math.max(0, this.dmgA - dt * 0.8); const lowHp = p.alive ? (1 - p.health / p.maxHealth) * 0.7 : 0; $('damage-vignette').style.opacity = Math.max(this.dmgA, lowHp).toFixed(2);
     $('scope').classList.toggle('on', !!p.scopeOverlay);
-    $('crosshair').classList.toggle('hide', !!p.scopeOverlay || !p.alive || p.sprint);
+    $('crosshair').classList.toggle('hide', !!p.scopeOverlay || !p.alive || p.sprint || p.adsBlend > 0.6);
     const spread = (p.ads ? w.spreadAds : w.spreadHip) + (p.moving ? w.spreadMove * 0.5 : 0) + (p.body.onGround ? 0 : 1.5) + p.kickP * 40;
     $('crosshair').style.setProperty('--gap', `${6 + spread * 4}px`);
     // damage indicators

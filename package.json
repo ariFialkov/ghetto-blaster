@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Ghetto Blaster - a hood-themed third-person shooter with simulated multiplayer, playable as a PWA on desktop and mobile.",
+  "description": "Ghetto Blaster - a hood-themed first-person shooter with simulated multiplayer, playable as a PWA on desktop and mobile.",
   "scripts": {
     "dev": "vite --host",
     "build": "node scripts/gen-icons.mjs && vite build",

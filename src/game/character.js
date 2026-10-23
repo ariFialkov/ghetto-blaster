@@ -140,7 +140,7 @@ export class CharacterModel {
     this.hips.position.y = (0.95 - crouch * 0.42 + bob) * s;
     this.hips.rotation.x = 0;
     this.hips.rotation.z = this.lean * 0.15;
-    this.hips.position.x = this.lean * 0.25 * s;
+    this.hips.position.x = -this.lean * 0.25 * s;
     // torso: aim pitch + sprint lean + lean
     const pitch = clamp(st.pitch || 0, -1.1, 1.1);
     this.aimPitch = damp(this.aimPitch, pitch, 16, dt);

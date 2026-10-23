@@ -14,6 +14,13 @@ export class Engine {
     this.renderer.toneMappingExposure = 1.05;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.08, 600);
+    // First-person view model gets its own scene and a narrower camera so the gun isn't distorted by the world FOV.
+    this.vmScene = new THREE.Scene();
+    this.vmCamera = new THREE.PerspectiveCamera(52, 1, 0.01, 8);
+    this.vmScene.add(this.vmCamera);
+    this.vmHemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0); this.vmScene.add(this.vmHemi);
+    this.vmSun = new THREE.DirectionalLight(0xffffff, 1.5); this.vmScene.add(this.vmSun); this.vmScene.add(this.vmSun.target);
+    this.renderer.autoClear = false;
     this.clock = new THREE.Clock();
     this.quality = 'high';
     this.onFrame = null;
@@ -54,6 +61,8 @@ export class Engine {
     sun.userData.env = true; s.add(sun); s.add(sun.target); sun.target.userData.env = true;
     this.sun = sun; this.hemi = hemi;
     const amb = new THREE.AmbientLight(new THREE.Color(env.ambient || '#404048'), env.ambientIntensity ?? 0.25); amb.userData.env = true; s.add(amb);
+    this.vmHemi.color.set(env.hemiSky); this.vmHemi.groundColor.set(env.hemiGround); this.vmHemi.intensity = (env.hemiIntensity ?? 0.9) * 1.1 + 0.3;
+    this.vmSun.color.set(env.sunColor); this.vmSun.intensity = Math.min(2.5, (env.sunIntensity ?? 2) * 0.8 + 0.4); this.vmSunDir = new THREE.Vector3(env.sunDir[0], env.sunDir[1], env.sunDir[2]).normalize();
   }
   // keep the shadow frustum centered on the camera target
   updateSunTarget(p) { if (!this.sun) return; const o = this.sun.position.clone().normalize(); this.sun.position.copy(p).addScaledVector(o, 120); this.sun.target.position.copy(p); this.sun.target.updateMatrixWorld(); }
@@ -62,7 +71,7 @@ export class Engine {
     const p = new THREE.Vector3(0, 1, 0), d = new THREE.Vector3(0, 0, 1);
     this.fx.muzzle(p, d, true); this.fx.tracer(p, p.clone().add(d)); this.fx.explosion(p, 1); this.fx.smoke(p, 1, 1); this.fx.impact(p, d); this.fx.blood(p);
     this.fx.update(0.001, this.camera);
-    try { this.renderer.compile(this.scene, this.camera); } catch (e) { /* ignore */ }
+    try { this.renderer.compile(this.scene, this.camera); this.renderer.compile(this.vmScene, this.vmCamera); } catch (e) { /* ignore */ }
     this.fx.clear();
   }
   start() { if (this.running) return; this.running = true; this.clock.start(); requestAnimationFrame(this._loop); }
@@ -73,8 +82,18 @@ export class Engine {
     const dt = Math.min(0.05, this.clock.getDelta());
     this.fx.update(dt, this.camera);
     if (this.onFrame) this.onFrame(dt);
+    this._resize2();
+    this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
+    if (this.vmCamera.children.some((c) => c.visible)) {
+      // align the view-model camera with the world camera (world-space positions stay valid, e.g. muzzle flashes)
+      this.vmCamera.position.copy(this.camera.position); this.vmCamera.quaternion.copy(this.camera.quaternion); this.vmCamera.updateMatrixWorld(true);
+      if (this.vmSunDir) { this.vmSun.position.copy(this.camera.position).addScaledVector(this.vmSunDir, 10); this.vmSun.target.position.copy(this.camera.position); this.vmSun.target.updateMatrixWorld(); }
+      this.renderer.clearDepth();
+      this.renderer.render(this.vmScene, this.vmCamera);
+    }
   }
+  _resize2() { if (this.vmCamera.aspect !== this.camera.aspect) { this.vmCamera.aspect = this.camera.aspect; this.vmCamera.updateProjectionMatrix(); } }
 }
 
 // ---------------- Effects ----------------

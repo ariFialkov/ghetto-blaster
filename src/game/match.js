@@ -264,7 +264,7 @@ export class Match {
     this.endResult = { ...result, rank, mode: this.mode, bet: this.bet, log: this.director.log };
     this.emit('end', this.endResult);
   }
-  dispose() { for (const a of this.actors) a.dispose(); this.projectiles.clear(); this.fx.clear(); for (const c of this.cars) this.scene.remove(c.mesh); if (this.heli) this.scene.remove(this.heli.mesh); this.scene.remove(this.map.group); }
+  dispose() { if (this.player && this.player.view) this.engine.vmCamera.remove(this.player.view.root); for (const a of this.actors) a.dispose(); this.projectiles.clear(); this.fx.clear(); for (const c of this.cars) this.scene.remove(c.mesh); if (this.heli) this.scene.remove(this.heli.mesh); this.scene.remove(this.map.group); }
   // ---------------- audio ----------------
   audio(name, actor, pos, opts = {}) {
     if (name === 'none') return;

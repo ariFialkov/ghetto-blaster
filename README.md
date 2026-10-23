@@ -1,6 +1,6 @@
 # Ghetto Blaster
 
-A hood-themed third-person shooter that runs in the browser on desktop and mobile as a PWA.
+A hood-themed first-person shooter that runs in the browser on desktop and mobile as a PWA.
 Seven maps based on real cities, three modes (Team Deathmatch, Free For All, Gun Game),
 five stock loadouts plus three custom slots, and 15 score streaks per map.
 

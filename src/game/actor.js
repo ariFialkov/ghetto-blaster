@@ -38,6 +38,7 @@ export class Actor {
   }
   get weapon() { return this.weapons[this.cur]; }
   get pos() { return this.body.pos; }
+  muzzleWorld(out) { return this.model.muzzleWorld(out); }
   eye(out = _v) { return out.set(this.body.pos.x, this.body.pos.y + this.body.eyeHeight(), this.body.pos.z); }
   chest(out = _v2) { return out.set(this.body.pos.x, this.body.pos.y + this.body.height * 0.55, this.body.pos.z); }
   forward(out = _q) { return out.set(Math.sin(this.body.yaw), 0, Math.cos(this.body.yaw)); }
@@ -89,7 +90,7 @@ export class Actor {
     let spread = (this.ads ? d.spreadAds : d.spreadHip) + moveFactor * (this.ads ? 0.3 : 1) + (this.body.onGround ? 0 : 1.5);
     spread *= accuracyMult * (this.body.crouch ? 0.8 : 1);
     const spreadRad = (spread * Math.PI) / 180;
-    const muzzle = this.model.muzzleWorld(new THREE.Vector3());
+    const muzzle = this.muzzleWorld(new THREE.Vector3());
     for (let p = 0; p < d.pellets; p++) {
       const sd = dir.clone();
       if (spreadRad > 0) { const a = this.rng.next() * Math.PI * 2, r = Math.sqrt(this.rng.next()) * spreadRad; const u = new THREE.Vector3().crossVectors(sd, Math.abs(sd.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize(); const v = new THREE.Vector3().crossVectors(sd, u); sd.addScaledVector(u, Math.cos(a) * r).addScaledVector(v, Math.sin(a) * r).normalize(); }
