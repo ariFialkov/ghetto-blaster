@@ -196,8 +196,10 @@ export class Director {
       wants.sort((a, b) => b[1] - a[1]); const killer = wants[0][0];
       if (killer.alive) {
         // victims: prefer below-set bots, never the player via fate (the player dies in real fights only)
+        // any other bot is a safe victim: deaths never affect the ordering (prefer the planned-below set)
         let victims = this._alive(below).filter((v) => v !== killer);
-        if (!victims.length) victims = this._alive(above).filter((v) => v !== killer && v.plannedRank > killer.plannedRank);
+        if (!victims.length) victims = this._alive(above).filter((v) => v !== killer);
+        if (!victims.length) victims = this._alive(m.crew).filter((v) => v !== killer && !m.sameTeam(v, killer));
         if (victims.length) { victims.sort((x, y) => (this._visibleToPlayer(x) ? 1 : 0) - (this._visibleToPlayer(y) ? 1 : 0) + this.rng.float(-0.4, 0.4)); if (this.fateKill(killer, victims[0], rem < 6)) this.fateT = 1 / Math.max(0.2, fateRate); else this.fateT = 0.5; }
       }
     }
@@ -205,7 +207,7 @@ export class Director {
     if (this.fateT <= 0 && this.rng.chance(0.25)) { const cand = this._alive(below).filter((b) => this._score(b) < ps - 1); const vic = this._alive(below); if (cand.length && vic.length > 1) { const k = this.rng.pick(cand); const v = this.rng.pick(vic.filter((x) => x !== k)); if (v && this.fateKill(k, v)) this.fateT = 3; } }
     // final seconds guarantee: ordering must hold at time-out
     if (rem < 2.5) {
-      for (let i = above.length - 1; i >= 0; i--) { const b = above[i]; const need = (ps + (above.length - i)) - this._score(b); for (let k = 0; k < need; k++) { const victims = this._alive(below).concat(this._alive(above).filter((x) => x.plannedRank > b.plannedRank)).filter((x) => x !== b); if (!victims.length) break; const v = this.rng.pick(victims); if (b.alive) { this.fateKill(b, v, true); } else { v.takeDamage(1000, b, 'body'); } } }
+      for (let i = above.length - 1; i >= 0; i--) { const b = above[i]; const need = (ps + (above.length - i)) - this._score(b); for (let k = 0; k < need; k++) { const victims = this._alive(below).concat(this._alive(above)).filter((x) => x !== b); if (!victims.length) break; const v = this.rng.pick(victims); if (b.alive) { this.fateKill(b, v, true); } else { v.takeDamage(1000, b, 'body'); } } }
     }
   }
   // final ranking tie-break for ranked modes (kills desc, then planned rank)
