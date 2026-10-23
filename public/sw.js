@@ -1,6 +1,6 @@
 /* Ghetto Blaster service worker: cache-first for the app shell, network-first for navigation. */
 const CACHE = 'ghetto-blaster-v1';
-const CORE = ['./', './index.html', './manifest.webmanifest', './icons/icon.svg'];
+const CORE = ['./', './index.html', './manifest.json', './icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
