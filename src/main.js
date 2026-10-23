@@ -11,6 +11,7 @@ import { getSave, persist, allLoadouts, resolveLoadout } from './game/loadouts.j
 import { findStreak } from './game/streaks.js';
 import { HUD } from './ui/hud.js';
 import * as UI from './ui/menu.js';
+import { renderCovers } from './ui/covers.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('gl');
@@ -79,14 +80,13 @@ function updateCinematic(dt) {
   engine.updateSunTarget(new THREE.Vector3(lx, 0, lz));
   if (cinT >= dur) { cinIndex++; setupCinematicShot(); }
 }
-// snapshot the cinematic views to use as mode panel art
+// staged cover shots for the mode panels (cached per map)
+const coverCache = new Map();
 function captureArts() {
-  const cam = engine.camera; const arts = []; const pts = app.mapData.cinematicPoints.length ? app.mapData.cinematicPoints : [{ x: 40, y: 20, z: 40, lookX: 0, lookZ: 0 }];
-  const old = { pos: cam.position.clone(), q: cam.quaternion.clone() };
-  const rt = new THREE.WebGLRenderTarget(512, 384); const buf = new Uint8Array(512 * 384 * 4); const c = document.createElement('canvas'); c.width = 512; c.height = 384; const ctx = c.getContext('2d');
-  for (let i = 0; i < 3; i++) { const p = pts[i % pts.length]; cam.position.set(p.x, p.y, p.z); cam.lookAt(p.lookX, 2, p.lookZ); engine.renderer.setRenderTarget(rt); engine.renderer.render(engine.scene, cam); engine.renderer.readRenderTargetPixels(rt, 0, 0, 512, 384, buf); const img = ctx.createImageData(512, 384); for (let y = 0; y < 384; y++) img.data.set(buf.subarray(y * 512 * 4, (y + 1) * 512 * 4), (383 - y) * 512 * 4); ctx.putImageData(img, 0, 0); arts.push(c.toDataURL('image/jpeg', 0.8)); }
-  engine.renderer.setRenderTarget(null); rt.dispose(); cam.position.copy(old.pos); cam.quaternion.copy(old.q);
-  return arts;
+  if (coverCache.has(app.mapId)) return coverCache.get(app.mapId);
+  let arts;
+  try { arts = renderCovers(engine, app.mapData, hashString(app.mapId)); } catch (e) { console.warn('cover render failed', e); arts = []; }
+  coverCache.set(app.mapId, arts); return arts;
 }
 
 // ---------------- modes ----------------

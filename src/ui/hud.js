@@ -86,7 +86,7 @@ export class HUD {
     const m = this.m, p = m.player, ctx = this.ctx, S = this.mm.width, R = S / 2; const map = m.map;
     const scale = S / 90; // 90 m across the minimap
     ctx.clearRect(0, 0, S, S); ctx.save(); ctx.beginPath(); ctx.arc(R, R, R - 2, 0, Math.PI * 2); ctx.clip();
-    ctx.translate(R, R); ctx.rotate(p.yaw); ctx.scale(scale, scale); ctx.translate(-p.pos.x, -p.pos.z);
+    ctx.translate(R, R); ctx.rotate(p.yaw + Math.PI); ctx.scale(scale, scale); ctx.translate(-p.pos.x, -p.pos.z); // forward (sin yaw, cos yaw) now points up
     const k = map.minimap.width / map.size;
     ctx.save(); ctx.translate(-map.size / 2, -map.size / 2); ctx.scale(1 / k, 1 / k); ctx.globalAlpha = 0.9; ctx.drawImage(map.minimap, 0, 0); ctx.restore();
     const dot = (x, z, color, r = 1.6) => { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, z, r, 0, Math.PI * 2); ctx.fill(); };
