@@ -101,7 +101,7 @@ export class Player extends Actor {
     const w = this.weapon.def; const cam = this.camera; const m = this.match;
     const adsRate = 1 / Math.max(0.08, w.adsTime);
     this.adsBlend = damp(this.adsBlend, this.ads && this.alive ? 1 : 0, adsRate * 3.5, dt);
-    const scoped = w.scope && this.adsBlend > 0.9;
+    const scoped = !!w.scope && this.adsBlend > 0.9;
     this.scopeOverlay = scoped;
     const targetFov = lerp(this.fov, w.adsFov, this.adsBlend) + (this.sprint ? 4 : 0);
     this.curFov = damp(this.curFov, targetFov, 14, dt);
@@ -114,7 +114,7 @@ export class Player extends Actor {
     const pitch = this.pitch + this.recoilP, yaw = this.yaw + this.recoilY;
     const fwd = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
     // offsets
-    const back = lerp(2.3, 1.15, this.adsBlend) * (dead ? 1.6 : 1), side = lerp(0.6, 0.42, this.adsBlend), up = lerp(0.28, 0.12, this.adsBlend);
+    const back = lerp(2.6, 1.35, this.adsBlend) * (dead ? 1.6 : 1), side = lerp(0.75, 0.62, this.adsBlend), up = lerp(0.42, 0.26, this.adsBlend) - (this.body.crouch ? 0.15 : 0);
     let desired = pivot.clone().addScaledVector(fwd, -back).addScaledVector(right, side).addScaledVector(UP, up);
     if (scoped) desired = eye.clone().addScaledVector(fwd, 0.1);
     // collision: pull camera in if blocked

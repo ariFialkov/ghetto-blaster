@@ -70,6 +70,14 @@ export class MapBuilder {
     // outer bounds walls (invisible)
     const s = this.size / 2, H = 30;
     for (const [x, z, w, d] of [[0, -s - 1, this.size + 4, 2], [0, s + 1, this.size + 4, 2], [-s - 1, 0, 2, this.size + 4], [s + 1, 0, 2, this.size + 4]]) { const b = this._collide(x, 0, z, w, H, d, 0, { walkable: false, kind: 'bounds' }); b.walkable = false; }
+    // visible perimeter: graffiti-covered concrete wall just inside the bounds
+    if (this.def.perimeter !== false) {
+      const pm = mat('concrete', { color: this.def.perimeterColor || '#7d7a72', seed: 77 }); const e = s - 0.6;
+      for (const [x, z, len, rot] of [[0, -e, this.size, 0], [0, e, this.size, 0], [-e, 0, this.size, Math.PI / 2], [e, 0, this.size, Math.PI / 2]]) {
+        this.box({ x, z, w: len, h: 3.2, d: 0.5, m: pm, rot, repeat: [len / 3, 1], collide: false });
+        for (let i = -3; i <= 3; i++) { const t = i * (this.size / 7.5); const px = rot ? x : x + t, pz = rot ? z + t : z; this.graffitiDecal(px, pz, 6, 0.5, rot, this.rng.pick(['GB', 'HOOD', 'RIP', 'KING', 'OPPS', '187', 'BLAST', 'NO SNITCH']), this.rng, rot ? (x < 0 ? 0 : 2) : (z < 0 ? 0 : 2)); }
+      }
+    }
     return mesh;
   }
   // Road between two points (any angle). Draws asphalt, center marks, and optional sidewalks (with kerb colliders? no - kerbs are step-able so just visual).
@@ -260,7 +268,26 @@ export class MapBuilder {
   cinematic(x, y, z, lookX, lookZ) { this.cinematicPoints.push({ x, y, z, lookX, lookZ }); }
 
   // ---------------- finish ----------------
+  /** Ring of distant buildings outside the playable area so the horizon is never empty. */
+  _skyline() {
+    if (this.def.skyline === false) return;
+    const rng = new RNG((this.def.seed || 7) + 999); const s = this.size / 2; const night = this.def.env && this.def.env.sunIntensity < 1;
+    const lit = night ? 0.6 : 0.15;
+    const mats = [0, 1, 2].map((i) => { const t = tex('facade', { seed: 500 + i + (this.def.seed || 0), wall: rng.pick(['#4a4a52', '#5a4a42', '#3f4a55', '#55504a']), style: 'plain', cols: 4, rows: 3, lit, winColor: night ? '#0e1420' : '#222a36' }); return new THREE.MeshStandardMaterial({ map: t, roughness: 0.95 }); });
+    for (let ring = 0; ring < 2; ring++) {
+      const n = 22 + ring * 12; const dist = s + 40 + ring * 60;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + rng.float(-0.05, 0.05); const r = dist + rng.float(-8, 8);
+        const x = Math.cos(a) * r, z = Math.sin(a) * r; const w = rng.float(12, 30), d = rng.float(12, 30), h = rng.float(8, 28) * (ring ? 2.2 : 1);
+        const m = rng.pick(mats).clone(); m.map = m.map.clone(); m.map.repeat.set(Math.max(1, Math.round(w / 10)), Math.max(1, Math.round(h / 9))); m.map.needsUpdate = true;
+        m.color = new THREE.Color(this.def.env?.fogColor || '#888').lerp(new THREE.Color('#ffffff'), 0.5); const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); mesh.position.set(x, h / 2, z); mesh.rotation.y = rng.float(0, Math.PI); mesh.castShadow = false; mesh.receiveShadow = false; this.group.add(mesh);
+      }
+    }
+    // ground slab under the skyline so it doesn't float on the fog
+    const g = new THREE.Mesh(new THREE.PlaneGeometry(this.size * 3, this.size * 3), mat('asphalt', { seed: 4, color: '#26262a' })); g.rotation.x = -Math.PI / 2; g.position.y = -0.05; g.receiveShadow = false; this.group.add(g);
+  }
   finish() {
+    this._skyline();
     const nav = new NavGrid(this.world, 1.5);
     // spawn height = lowest walkable layer at that cell (ground, or a terrace that replaced the ground)
     for (const s of this.spawns.all) { const node = nav.nodeOf(s.x, s.z, 0); s.y = node >= 0 ? nav.h[node] : 0; if (Number.isNaN(s.y)) s.y = 0; }
@@ -451,7 +478,7 @@ const PROPS = {
   scaffold(x, z, rot, o) { const h = o.h || 6, len = o.len || 6; const pm = col('#8a8a8a', 0.5, 0.7); const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = rot; for (let i = 0; i <= Math.round(len / 2); i++) for (const pz of [-0.6, 0.6]) { const p = new THREE.Mesh(new THREE.BoxGeometry(0.07, h, 0.07), pm); p.position.set(-len / 2 + i * 2, h / 2, pz); g.add(p); } for (let lvl = 1; lvl * 2 <= h; lvl++) { const plank = new THREE.Mesh(new THREE.BoxGeometry(len, 0.08, 1.3), col('#9a7a4a')); plank.position.set(0, lvl * 2, 0); plank.castShadow = true; g.add(plank); } this.group.add(g); for (let lvl = 1; lvl * 2 <= h; lvl++) this._collide(x, lvl * 2 - 0.08, z, len, 0.08, 1.3, rot, { walkable: true }); this._collide(x, 0, z, len, 0.3, 1.3, rot, { walkable: true }); },
   billboard(x, z, rot, o) { const pm = col('#444', 0.5, 0.6); const h = o.h || 8; this.cylinder(x, 0, z, 0.3, h, pm, 8, true); const m = new THREE.MeshStandardMaterial({ map: tex('sign', { text: o.text || 'GHETTO BLASTER', bg: o.bg || '#ffd166', fg: o.fg || '#111', w: 1024, h: 384 }), roughness: 0.6, side: THREE.DoubleSide }); const b = new THREE.Mesh(new THREE.BoxGeometry(o.w || 10, (o.w || 10) * 0.375, 0.2), m); b.position.set(x, h + (o.w || 10) * 0.19, z); b.rotation.y = rot; b.castShadow = true; this.group.add(b); },
   watertower(x, z, rot, o) { const h = o.h || 6; const pm = col('#5a4a3a', 0.9); for (const [lx, lz] of [[-1.2, -1.2], [1.2, -1.2], [-1.2, 1.2], [1.2, 1.2]]) { const l = new THREE.Mesh(new THREE.BoxGeometry(0.15, h, 0.15), pm); l.position.set(x + lx, (o.y || 0) + h / 2, z + lz); this.group.add(l); } const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.6, 3, 14), mat('metal', { seed: 77, rust: 0.7, color: '#7a6a5a' })); tank.position.set(x, (o.y || 0) + h + 1.5, z); tank.castShadow = true; this.group.add(tank); const cone = new THREE.Mesh(new THREE.ConeGeometry(1.9, 1.0, 14), pm); cone.position.set(x, (o.y || 0) + h + 3.5, z); this.group.add(cone); this._collide(x, o.y || 0, z, 2.8, h + 4, 2.8, 0, { walkable: false }); },
-  sign(x, z, rot, o) { const pm = col('#444', 0.5, 0.6); this.cylinder(x, 0, z, 0.06, 2.6, pm, 6, false); const s = new THREE.Mesh(new THREE.PlaneGeometry(o.w || 0.9, o.h || 0.5), new THREE.MeshStandardMaterial({ map: tex('sign', { text: o.text || 'ONE WAY', bg: o.bg || '#fff', fg: o.fg || '#111', w: 256, h: 128 }), side: THREE.DoubleSide })); s.position.set(x, 2.3, z); s.rotation.y = rot; this.group.add(s); },
+  sign(x, z, rot, o) { const pm = col('#444', 0.5, 0.6); this.cylinder(x, 0, z, 0.06, 2.6, pm, 6, false); const sm = new THREE.MeshStandardMaterial({ map: tex('sign', { text: o.text || 'ONE WAY', bg: o.bg || '#fff', fg: o.fg || '#111', w: 256, h: 128 }) }); for (const side of [0, Math.PI]) { const s = new THREE.Mesh(new THREE.PlaneGeometry(o.w || 0.9, o.h || 0.5), sm); s.position.set(x + Math.sin(rot + side) * 0.01, 2.3, z + Math.cos(rot + side) * 0.01); s.rotation.y = rot + side; this.group.add(s); } },
   stopsign(x, z, rot, o) { this.prop('sign', { x, z, rot, text: 'STOP', bg: '#c0392b', fg: '#fff', w: 0.8, h: 0.8 }); },
   neon(x, y, z, rot, o) { /* use neonSign */ },
   neonSign(x, z, rot, o) { const t = tex('neon', { text: o.text || 'OPEN', color: o.color || '#ff2d95', w: 512, h: 160 }); const m = new THREE.MeshStandardMaterial({ map: t, transparent: true, emissive: new THREE.Color(o.color || '#ff2d95'), emissiveMap: t, emissiveIntensity: 1.6, side: THREE.DoubleSide, depthWrite: false }); const p = new THREE.Mesh(new THREE.PlaneGeometry(o.w || 4, (o.w || 4) * 0.31), m); p.position.set(x, o.y || 3.5, z); p.rotation.y = rot; this.group.add(p); if (o.light !== false) this.light(x + Math.sin(rot) * 0.6, o.y || 3.5, z + Math.cos(rot) * 0.6, o.color || '#ff2d95', 6, 10); },

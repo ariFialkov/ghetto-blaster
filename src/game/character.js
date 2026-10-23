@@ -133,8 +133,8 @@ export class CharacterModel {
     const sw = Math.sin(this.phase) * amp, sw2 = Math.sin(this.phase + Math.PI) * amp;
     const crouch = this.crouchBlend;
     // legs
-    this.legL.rotation.x = sw + crouch * 0.9 + (!st.onGround ? -0.5 : 0);
-    this.legR.rotation.x = sw2 + crouch * 0.9 + (!st.onGround ? -0.3 : 0);
+    this.legL.rotation.x = sw - crouch * 0.9 + (!st.onGround ? -0.5 : 0);
+    this.legR.rotation.x = sw2 - crouch * 0.9 + (!st.onGround ? -0.3 : 0);
     // hips bob & crouch
     const bob = Math.abs(Math.cos(this.phase)) * 0.045 * amp;
     this.hips.position.y = (0.95 - crouch * 0.42 + bob) * s;
@@ -154,7 +154,7 @@ export class CharacterModel {
     this.armR.rotation.x = holdR; this.armR.rotation.z = 0.15 - ads * 0.1; this.armR.rotation.y = -0.2 + ads * 0.25;
     this.armL.rotation.x = holdL + (this.gunIsPistol ? 0.1 : -0.1); this.armL.rotation.z = -0.45 + ads * 0.2; this.armL.rotation.y = 0.5 - ads * 0.25;
     if (st.reloading) { const r = Math.sin(st.reloadT * 9) * 0.35; this.armL.rotation.x = -0.8 + r; this.armL.rotation.z = -0.3; }
-    if (sprint > 0.5 && !st.ads) { this.armR.rotation.x = -0.4 - Math.sin(this.phase + Math.PI) * 0.4 * amp; this.armL.rotation.x = -0.4 - Math.sin(this.phase) * 0.4 * amp; this.armL.rotation.y = 0.1; this.armL.rotation.z = -0.1; }
+    if (sprint > 0.5 && !st.ads) { this.armR.rotation.x = -0.4 - Math.sin(this.phase + Math.PI) * 0.5 * amp; this.armL.rotation.x = -0.4 - Math.sin(this.phase) * 0.5 * amp; this.armL.rotation.y = 0.1; this.armL.rotation.z = -0.1; }
     // gun mount position follows arms
     const gx = (-0.2 + ads * 0.2) * s, gy = (0.38 + this.aimPitch * 0.05) * s, gz = (0.22 + ads * 0.08) * s;
     this.gunMount.position.set(gx, gy, gz);

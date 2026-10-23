@@ -7,7 +7,7 @@ export const def = {
   id: 'kowloon', name: 'Kowloon', city: 'Hong Kong', size: 160, seed: 88,
   teams: { tdm: 4, ffa: 7 },
   blurb: 'Hong Kong after dark. Neon alleys, a wet market, tong lau rooftops and a footbridge over Nathan Road.',
-  env: { skyTop: '#07080f', skyHorizon: '#2a1f3a', skyBottom: '#05050a', fogColor: '#141020', fogNear: 40, fogFar: 170, hemiSky: '#3a3f6a', hemiGround: '#201a28', hemiIntensity: 0.9, sunColor: '#8fa0ff', sunIntensity: 0.5, sunDir: [-0.3, 0.9, 0.4], ambient: '#2a2a44', ambientIntensity: 0.55, shadowSize: 90 },
+  env: { skyTop: '#07080f', skyHorizon: '#2a1f3a', skyBottom: '#05050a', fogColor: '#141020', fogNear: 40, fogFar: 170, hemiSky: '#3a3f6a', hemiGround: '#201a28', hemiIntensity: 1.5, sunColor: '#8fa0ff', sunIntensity: 0.9, sunDir: [-0.3, 0.9, 0.4], ambient: '#2a2a44', ambientIntensity: 0.9, shadowSize: 90 },
   lightBudget: 24,
   minimapBg: '#16141c',
 };

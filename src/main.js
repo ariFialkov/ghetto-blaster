@@ -21,6 +21,7 @@ const save = getSave();
 let settings = save.settings;
 const params = new URLSearchParams(location.search);
 const DEBUG_TIME = params.has('t') ? Math.max(20, +params.get('t')) : 0; // ?t=60 shortens matches for testing
+const FORCE_MAP = MAPS.some((m) => m.id === params.get('map')) ? params.get('map') : null; // ?map=kowloon
 const app = { state: 'boot', mapData: null, mapId: null, match: null, cin: null, mode: null, bet: 0, pick: null, lobbyTimers: [] };
 if (input.mobile) document.body.classList.add('mobile');
 
@@ -51,11 +52,12 @@ async function enterTitle(mapId = null) {
   app.state = 'title'; input.setEnabled(false); input.releaseLock(); hud.hide(); engine.start();
   clearSceneMatch();
   const rng = new RNG(Date.now() & 0xffff);
-  app.mapId = mapId || rng.pick(MAPS).id;
+  app.mapId = FORCE_MAP || mapId || rng.pick(MAPS).id;
   app.mapData = await getMap(app.mapId);
   engine.setEnvironment(app.mapData.def.env);
   app.match = new Match({ engine, input, map: app.mapData, mode: MODES.tdm, settings, seed: rng.int(1, 1e9), loadout: null, mapId: app.mapId, cinematic: true });
   app.match.goLive();
+  engine.warmup();
   cinIndex = 0; cinT = 0; setupCinematicShot();
   UI.showTitle(app.mapData.def.name, save.wallet);
   engine.start();
@@ -98,7 +100,7 @@ function enterModes() {
 async function enterLobby(mode) {
   app.state = 'lobby'; app.mode = mode; UI.hideModes();
   const rng = new RNG(Date.now() & 0xfffff);
-  const mapId = rng.pick(MAPS).id; app.mapId = mapId;
+  const mapId = FORCE_MAP || rng.pick(MAPS).id; app.mapId = mapId;
   const { def } = await loadMap(mapId);
   UI.showLobby(mode, def, save.wallet, (b) => { app.bet = b; });
   $('lobby-cancel').onclick = () => { app.lobbyTimers.forEach(clearTimeout); app.lobbyTimers = []; sfx('click'); enterTitle(app.mapId); };
@@ -112,7 +114,7 @@ async function enterLobby(mode) {
   const name = (settings.name || 'YOU').toUpperCase();
   const modeDef = DEBUG_TIME ? { ...mode, timeLimit: DEBUG_TIME } : mode;
   app.match = new Match({ engine, input, map: mapData, mode: modeDef, settings, seed, loadout, mapId, bet: app.bet, playerName: name });
-  const m = app.match;
+  const m = app.match; engine.warmup();
   const total = m.actors.length; const list = m.actors.slice();
   const t = (ms, fn) => app.lobbyTimers.push(setTimeout(fn, ms));
   const t1 = 1600 + rng.int(0, 1200), t2 = t1 + 1800 + rng.int(0, 1200);

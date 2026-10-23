@@ -57,6 +57,14 @@ export class Engine {
   }
   // keep the shadow frustum centered on the camera target
   updateSunTarget(p) { if (!this.sun) return; const o = this.sun.position.clone().normalize(); this.sun.position.copy(p).addScaledVector(o, 120); this.sun.target.position.copy(p); this.sun.target.updateMatrixWorld(); }
+  /** Compile every shader variant up front so the first shots/explosions don't hitch. */
+  warmup() {
+    const p = new THREE.Vector3(0, 1, 0), d = new THREE.Vector3(0, 0, 1);
+    this.fx.muzzle(p, d, true); this.fx.tracer(p, p.clone().add(d)); this.fx.explosion(p, 1); this.fx.smoke(p, 1, 1); this.fx.impact(p, d); this.fx.blood(p);
+    this.fx.update(0.001, this.camera);
+    try { this.renderer.compile(this.scene, this.camera); } catch (e) { /* ignore */ }
+    this.fx.clear();
+  }
   start() { if (this.running) return; this.running = true; this.clock.start(); requestAnimationFrame(this._loop); }
   stop() { this.running = false; }
   _loop() {
@@ -91,6 +99,17 @@ class FX {
     for (let i = 0; i < this.MAX; i++) this.pPos[i * 3 + 1] = -1000;
     this.tracerMat = new THREE.LineBasicMaterial({ color: 0xffd080, transparent: true, opacity: 0.9, linewidth: 1 });
     this.smokes = [];
+    // Fixed pool of dynamic lights. Adding/removing lights forces three.js to recompile every shader, so the
+    // pool lives in the scene permanently and we only change intensity/position.
+    this.lightPool = [];
+    for (let i = 0; i < 6; i++) { const l = new THREE.PointLight(0xffffff, 0, 10, 2); l.position.set(0, -100, 0); this.group.add(l); this.lightPool.push({ l, life: 0, maxLife: 1, decay: true }); }
+    this.spot = new THREE.SpotLight(0xffffff, 0, 80, 0.4, 0.5, 1.2); this.spot.position.set(0, -100, 0); this.group.add(this.spot); this.group.add(this.spot.target);
+  }
+  /** Borrow a pooled light. Returns the slot so callers can move it. */
+  light(pos, color = 0xffffff, intensity = 5, dist = 10, life = 0.05, decay = true) {
+    let slot = this.lightPool.find((s) => s.life <= 0); if (!slot) slot = this.lightPool.reduce((a, b) => (a.life < b.life ? a : b));
+    slot.l.position.copy(pos); slot.l.color.set(color); slot.l.intensity = intensity; slot.l.distance = dist; slot.life = life; slot.maxLife = life; slot.decay = decay; slot.base = intensity;
+    return slot;
   }
   _spawn(p, v, life, size, col, grav = 0, drag = 0) {
     if (this.parts.length >= this.MAX) this.parts.shift();
@@ -116,14 +135,14 @@ class FX {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.muzzleTex, color: 0xffd090, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     s.position.copy(pos).addScaledVector(dir, 0.15); s.scale.setScalar(big ? 0.9 : 0.5); s.material.rotation = Math.random() * 6;
     this.group.add(s); this.items.push({ obj: s, life: 0.045, kind: 'muzzle' });
-    const light = new THREE.PointLight(0xffb060, big ? 6 : 3, 8, 2); light.position.copy(pos); this.group.add(light); this.items.push({ obj: light, life: 0.05, kind: 'light' });
+    this.light(pos, 0xffb060, big ? 6 : 3, 8, 0.05);
   }
   explosion(pos, radius = 5) {
     for (let i = 0; i < 40; i++) { const v = new THREE.Vector3((Math.random() - 0.5), Math.random() * 0.8 + 0.2, (Math.random() - 0.5)).normalize().multiplyScalar(4 + Math.random() * 10); this._spawn(pos, v, 0.5 + Math.random() * 0.6, 2.5, new THREE.Color(1, 0.4 + Math.random() * 0.4, 0.1), 6, 2); }
     for (let i = 0; i < 30; i++) { const v = new THREE.Vector3((Math.random() - 0.5), Math.random() * 0.6 + 0.3, (Math.random() - 0.5)).normalize().multiplyScalar(1 + Math.random() * 4); this._spawn(pos, v, 1.5 + Math.random() * 1.5, 6 + Math.random() * 6, new THREE.Color(0.2, 0.2, 0.2), -0.6, 1.5); }
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.particleTex, color: 0xffa040, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     s.position.copy(pos); s.scale.setScalar(radius * 0.6); this.group.add(s); this.items.push({ obj: s, life: 0.25, kind: 'flash', grow: radius * 3 });
-    const light = new THREE.PointLight(0xffa040, 40, radius * 5, 2); light.position.copy(pos).add(new THREE.Vector3(0, 1, 0)); this.group.add(light); this.items.push({ obj: light, life: 0.35, kind: 'light' });
+    this.light(pos.clone().add(new THREE.Vector3(0, 1, 0)), 0xffa040, 40, radius * 5, 0.35);
   }
   smoke(pos, radius = 5, life = 14) {
     const sprites = [];
@@ -157,10 +176,10 @@ class FX {
     for (let i = this.items.length - 1; i >= 0; i--) {
       const it = this.items[i]; it.life -= dt;
       if (it.kind === 'flash') { it.obj.scale.addScalar(it.grow * dt); it.obj.material.opacity = Math.max(0, it.life * 4); }
-      if (it.kind === 'light') it.obj.intensity *= 0.8;
       if (it.kind === 'tracer') it.obj.material.opacity = Math.max(0, it.life * 15);
       if (it.life <= 0) { this.group.remove(it.obj); if (it.obj.geometry) it.obj.geometry.dispose(); if (it.obj.material) it.obj.material.dispose(); this.items.splice(i, 1); }
     }
+    for (const slot of this.lightPool) { if (slot.life > 0) { slot.life -= dt; if (slot.decay) slot.l.intensity = slot.base * Math.max(0, slot.life / slot.maxLife); if (slot.life <= 0) { slot.l.intensity = 0; slot.l.position.set(0, -100, 0); } } }
     for (let i = this.smokes.length - 1; i >= 0; i--) {
       const s = this.smokes[i]; s.life -= dt; const k = s.life / s.maxLife;
       const a = Math.min(1, (1 - k) * 6) * Math.min(1, k * 4) * 0.85;
@@ -175,5 +194,7 @@ class FX {
     this.items.length = 0; this.parts.length = 0;
     for (const s of this.smokes) for (const sp of s.sprites) this.group.remove(sp);
     this.smokes.length = 0;
+    for (const slot of this.lightPool) { slot.life = 0; slot.l.intensity = 0; slot.l.position.set(0, -100, 0); }
+    this.spot.intensity = 0;
   }
 }

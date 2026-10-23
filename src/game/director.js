@@ -168,7 +168,7 @@ export class Director {
       if (def > 0 && !(this._score(b) >= limit - 1 && !above.every((x) => x === b || this._score(x) >= ps))) { wants.push([b, def]); fateRate += Math.min(0.4, def * 0.06); }
     });
     below.forEach((b) => {
-      const cap = Math.max(0, ps - 1); const over = this._score(b) - cap;
+      const cap = ps; const over = this._score(b) - cap; // ties go to the player (planned rank), so below bots may reach ps but never pass it
       const mu = this._mu(b); mu.dmg = over >= 0 ? 0.05 : clamp(1 - over * 0.1, 0.5, 1.3); mu.acc = over >= 0 ? 0.4 : clamp(1 - over * 0.1, 0.6, 1.2); mu.react = over >= 0 ? 1.8 : 1; mu.incoming = over >= 0 ? 1.4 : 1; mu.attract = 0;
     });
     // the player must die more when planned low: hunters from the above set
@@ -177,15 +177,15 @@ export class Director {
     for (const b of aliveAbove) { if (playerTooGood && b.rng.chance(0.3)) { b.hunt = p; this._mu(b).attract = 30; } else if (b.hunt === p && !playerTooGood) b.hunt = null; }
     if (playerTooGood) pm.incoming = 1.25;
     // hard guards. Final ordering only needs: every planned-above bot >= player, every planned-below bot < player (ties go to planned rank).
-    const aboveOk = above.every((b) => this._score(b) >= ps);
+    const aboveOk = above.every((b) => this._score(b) >= ps), belowOk = below.every((b) => this._score(b) <= ps);
     this.guard = (a, v) => {
       let k = 1;
       if (a === p) {
         if (P.placement > 1 && ps >= limit - 1 && this._score(winner) < limit) k *= 0.03; // player can't finish before the planned winner
         if (P.placement > 1 && !aboveOk) k *= 0.35; // let the planned-above bots catch up
-      } else if (below.includes(a) && this._score(a) >= Math.max(0, ps - 1) && (ps > 0 || f > 0.3)) k *= 0.03;
+      } else if (below.includes(a) && this._score(a) >= ps) k *= 0.03;
       if (P.placement === 1 && a !== p && this._score(a) >= limit - 1) k *= 0.03; // nobody beats the player to the limit
-      if (a !== p && this._score(a) >= limit - 1 && !aboveOk) k *= 0.03; // nobody closes it out before the ordering holds
+      if (a !== p && this._score(a) >= limit - 1 && !(aboveOk && belowOk)) k *= 0.03; // nobody closes it out before the ordering holds
       return k;
     };
     if (!aboveOk) fateRate += 0.5;
