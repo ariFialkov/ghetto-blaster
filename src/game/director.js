@@ -112,8 +112,8 @@ export class Director {
     const botsW = m.bots.filter((b) => b.team === P.W), botsL = m.bots.filter((b) => b.team === P.L);
     const playerOnW = p.team === P.W;
     // global pace: keep total kills near the planned trajectory so the match lasts the intended time
-    const desiredTotal = (limit + P.loserFinal) * Math.min(1, f / 0.92) + 2, actualTotal = sW + sL + 1;
-    this.pace = clamp(this.pace * 0.8 + 0.2 * clamp(desiredTotal / actualTotal, 0.35, 1.5), 0.35, 1.5);
+    const desiredTotal = (limit + P.loserFinal) * Math.min(1, f / 0.95) + 2, actualTotal = sW + sL + 1;
+    this.pace = clamp(this.pace * 0.8 + 0.2 * clamp(desiredTotal / actualTotal, 0.25, 1.5), 0.25, 1.5);
     // base multipliers: winners strengthen as they fall behind plan, losers weaken as they get ahead of plan (with tolerance bands)
     const dW = Math.max(0, defW - 3), oL = Math.max(0, overL - 3);
     const wBuff = clamp(1 + dW * 0.08, 0.75, 2.4), lNerf = clamp(1 - oL * 0.08, 0.35, 1.25);
@@ -154,10 +154,10 @@ export class Director {
     const ps = this._score(p);
     const pm = this._mu(p); pm.dmg = 1; pm.incoming = 1;
     const totalKills = m.actors.reduce((a, x) => a + (x.isCrew ? 0 : x.kills), 0) + 1;
-    const desiredTotal = limit * (P.n * 0.45) * Math.min(1, f / 0.9) + 2; // the winner reaches the limit at ~90% time; others trail
-    this.pace = clamp(this.pace * 0.8 + 0.2 * clamp(desiredTotal / totalKills, 0.35, 1.5), 0.35, 1.5);
+    const desiredTotal = limit * (P.n * 0.4) * Math.min(1, f / 0.92) + 2; // the winner reaches the limit at ~90% time; others trail
+    this.pace = clamp(this.pace * 0.8 + 0.2 * clamp(desiredTotal / totalKills, 0.25, 1.5), 0.25, 1.5);
     // desired pace for the winner so the match ends around 90% of the time limit
-    const winner = P.winner; const desiredWin = limit * Math.min(1, f / 0.9);
+    const winner = P.winner; const desiredWin = limit * Math.min(1, f / 0.92);
     const above = P.above, below = P.below;
     let fateRate = 0; const wants = []; // [killer, deficit]
     above.forEach((b, i) => {

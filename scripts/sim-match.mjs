@@ -17,7 +17,7 @@ const { findStreak, streaksForMap } = await import('../src/game/streaks.js');
 
 const modeId = process.argv[2] || 'tdm', seeds = +(process.argv[3] || 5), mapArg = process.argv[4] || null;
 const mapIds = mapArg ? [mapArg] : ['skidrow', 'projects', 'tenements', 'ward', 'barrio', 'kowloon', 'banlieue'];
-const fxStub = { tracer: noop, impact: noop, muzzle: noop, explosion: noop, smoke: noop, sparkTrail: noop, blood: noop, casing: noop, inSmoke: () => false, clear: noop, update: noop };
+const fxStub = { tracer: noop, impact: noop, muzzle: noop, explosion: noop, smoke: noop, sparkTrail: noop, blood: noop, casing: noop, inSmoke: () => false, clear: noop, update: noop, light: () => ({ life: 0, l: { intensity: 0 } }), spot: { intensity: 0, position: { copy: noop }, target: { position: { set: noop }, updateMatrixWorld: noop } } };
 const maps = new Map();
 async function getMap(id) { if (!maps.has(id)) { const { def, build } = await loadMap(id); const d = build(); d.def = def; maps.set(id, d); } return maps.get(id); }
 let fails = 0;
