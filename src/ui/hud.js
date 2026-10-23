@@ -1,6 +1,7 @@
 // In-game HUD bound to a Match.
 import * as THREE from 'three';
 import { sfx } from '../audio/sfx.js';
+import { NameTags } from './nametags.js';
 
 const $ = (id) => document.getElementById(id);
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -11,6 +12,7 @@ export class HUD {
     this.msgT = 0; this.streakMsgT = 0; this.hitT = 0; this.flashA = 0; this.dmgA = 0; this.inds = []; this.textT = 0;
     this.lastFeedKey = '';
     this.streakSlots = [];
+    this.tags = new NameTags($('nametags'));
   }
   bind(match, { onOpenLoadout, onScoreboard, onPause }) {
     this.m = match; const p = match.player;
@@ -62,6 +64,7 @@ export class HUD {
     // text (throttled)
     this.textT -= dt; if (this.textT <= 0) { this.textT = 0.08; this.updateText(); }
     this.drawMinimap();
+    this.tags.update(m);
   }
   updateText() {
     const m = this.m, p = m.player, w = p.weapon;
@@ -104,5 +107,5 @@ export class HUD {
     ctx.save(); ctx.translate(R, R); ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R, -Math.PI / 2 - 0.6, -Math.PI / 2 + 0.6); ctx.closePath(); ctx.fill(); ctx.restore();
     if (m.radar.jam > 0 || m.emp > 0) { ctx.fillStyle = 'rgba(74,222,128,0.9)'; ctx.font = 'bold 14px Impact, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('JAMMING', R, S - 14); }
   }
-  hide() { this.el.classList.add('hidden'); this.m = null; }
+  hide() { this.el.classList.add('hidden'); this.m = null; this.tags.clear(); }
 }

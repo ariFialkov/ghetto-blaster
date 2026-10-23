@@ -69,7 +69,7 @@ export class Engine {
   /** Compile every shader variant up front so the first shots/explosions don't hitch. */
   warmup() {
     const p = new THREE.Vector3(0, 1, 0), d = new THREE.Vector3(0, 0, 1);
-    this.fx.muzzle(p, d, true); this.fx.tracer(p, p.clone().add(d)); this.fx.explosion(p, 1); this.fx.smoke(p, 1, 1); this.fx.impact(p, d); this.fx.blood(p);
+    this.fx.vmScene = this.vmScene; this.fx.muzzle(p, d, 'shotgun'); this.fx.muzzle(p, d, 'revolver', { firstPerson: true }); this.fx.tracer(p, p.clone().add(d)); this.fx.explosion(p, 1); this.fx.smoke(p, 1, 1); this.fx.impact(p, d); this.fx.blood(p);
     this.fx.update(0.001, this.camera);
     try { this.renderer.compile(this.scene, this.camera); this.renderer.compile(this.vmScene, this.vmCamera); } catch (e) { /* ignore */ }
     this.fx.clear();
@@ -103,6 +103,12 @@ class FX {
     this.group = new THREE.Group(); scene.add(this.group);
     this.items = [];
     this.particleTex = tex('particle'); this.muzzleTex = tex('muzzle');
+    // muzzle flash layer materials (shared base, cloned per flash so opacity animates independently; same shader program)
+    const add = (map, color) => new THREE.MeshBasicMaterial({ map, color, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
+    this.mfMat = { core: new THREE.SpriteMaterial({ map: tex('flashCore'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), tongue: add(tex('flashTongue'), 0xffffff), ring: add(tex('flashRing'), 0xffffff), smoke: new THREE.SpriteMaterial({ map: tex('smokePuff'), transparent: true, depthWrite: false, fog: true, color: 0x9a9aa0 }) };
+    const tg = new THREE.PlaneGeometry(1, 1); tg.translate(0, 0.5, 0); tg.rotateX(Math.PI / 2); this.tongueGeo = tg; // extends along +Z from the origin
+    const rg = new THREE.PlaneGeometry(1, 1); this.ringGeo = rg; // faces +Z (perpendicular to the barrel)
+    this.vmScene = null;
     // instanced-ish particle pool with Points
     this.MAX = 1500;
     const g = new THREE.BufferGeometry();
@@ -150,11 +156,30 @@ class FX {
     const l = new THREE.Line(g, this.tracerMat.clone()); l.frustumCulled = false;
     this.group.add(l); this.items.push({ obj: l, life: 0.06, kind: 'tracer' });
   }
-  muzzle(pos, dir, big = false) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.muzzleTex, color: 0xffd090, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
-    s.position.copy(pos).addScaledVector(dir, 0.15); s.scale.setScalar(big ? 0.9 : 0.5); s.material.rotation = Math.random() * 6;
-    this.group.add(s); this.items.push({ obj: s, life: 0.045, kind: 'muzzle' });
-    this.light(pos, 0xffb060, big ? 6 : 3, 8, 0.05);
+  /** Muzzle flash. profile: pistol|revolver|smg|ar|lmg|shotgun|sniper|suppressed. opts.firstPerson puts the geometry in the view-model scene. */
+  muzzle(pos, dir, profile = 'ar', opts = {}) {
+    if (profile === true) profile = 'shotgun'; if (profile === false) profile = 'ar';
+    const P = MUZZLE_PROFILES[profile] || MUZZLE_PROFILES.ar;
+    const parent = opts.firstPerson && this.vmScene ? this.vmScene : this.group;
+    const g = new THREE.Group(); g.position.copy(pos); g.lookAt(pos.clone().add(dir)); g.rotateZ(Math.random() * Math.PI * 2);
+    const life = P.life * (0.85 + Math.random() * 0.3);
+    const items = [];
+    // core bloom
+    if (P.core > 0) { const sp = new THREE.Sprite(this.mfMat.core.clone()); sp.material.color.set(P.tint); sp.position.z = P.coreOffset; sp.scale.setScalar(P.core * (0.8 + Math.random() * 0.4)); g.add(sp); items.push({ obj: sp, kind: 'core', base: sp.scale.x }); }
+    // flame tongues along the barrel (crossed quads), with random lengths
+    for (let i = 0; i < P.tongues; i++) { const m = new THREE.Mesh(this.tongueGeo, this.mfMat.tongue.clone()); m.material.color.set(P.tint); const len = P.length * (0.7 + Math.random() * 0.6), wid = P.width * (0.8 + Math.random() * 0.4); m.scale.set(wid, 1, len); m.rotation.z = (i / P.tongues) * Math.PI + Math.random() * 0.4; g.add(m); items.push({ obj: m, kind: 'tongue', len, wid }); }
+    // side jets (compensator / revolver cylinder gap)
+    for (let i = 0; i < P.jets; i++) { const m = new THREE.Mesh(this.tongueGeo, this.mfMat.tongue.clone()); m.material.color.set(P.tint); const len = P.jetLen * (0.7 + Math.random() * 0.6); m.scale.set(P.width * 0.6, 1, len); m.position.z = P.jetOffset; m.rotation.x = P.jetAngle; m.rotation.z = 0; const holder = new THREE.Group(); holder.rotation.z = (i / P.jets) * Math.PI * 2 + (P.jets === 2 ? Math.PI / 2 : 0); holder.add(m); g.add(holder); items.push({ obj: m, kind: 'tongue', len, wid: P.width * 0.6 }); }
+    // shock ring
+    if (P.ring > 0) { const m = new THREE.Mesh(this.ringGeo, this.mfMat.ring.clone()); m.position.z = P.length * 0.35; m.scale.setScalar(P.ring * 0.3); g.add(m); items.push({ obj: m, kind: 'ring', base: P.ring }); }
+    parent.add(g);
+    this.items.push({ obj: g, life, maxLife: life, kind: 'muzzle', parts: items, parent });
+    // smoke puff drifting from the muzzle
+    if (P.smoke > 0) { const sp = new THREE.Sprite(this.mfMat.smoke.clone()); sp.material.opacity = 0; sp.position.copy(pos).addScaledVector(dir, P.length * 0.5); sp.scale.setScalar(P.smoke * 0.5); sp.material.rotation = Math.random() * 6; this.group.add(sp); this.items.push({ obj: sp, life: 0.9, maxLife: 0.9, kind: 'smokepuff', vel: dir.clone().multiplyScalar(0.8).add(new THREE.Vector3(0, 0.5, 0)), grow: P.smoke, peak: P.smokeAlpha }); }
+    // sparks
+    for (let i = 0; i < P.sparks; i++) { const v = dir.clone().multiplyScalar(6 + Math.random() * 10).add(new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4)); this._spawn(pos, v, 0.12 + Math.random() * 0.2, 0.35, new THREE.Color(1, 0.75, 0.3), 6, 3); }
+    // light
+    this.light(pos.clone().addScaledVector(dir, 0.2), P.lightColor, P.light, P.lightDist, life + 0.02);
   }
   explosion(pos, radius = 5) {
     for (let i = 0; i < 40; i++) { const v = new THREE.Vector3((Math.random() - 0.5), Math.random() * 0.8 + 0.2, (Math.random() - 0.5)).normalize().multiplyScalar(4 + Math.random() * 10); this._spawn(pos, v, 0.5 + Math.random() * 0.6, 2.5, new THREE.Color(1, 0.4 + Math.random() * 0.4, 0.1), 6, 2); }
@@ -195,6 +220,18 @@ class FX {
     for (let i = this.items.length - 1; i >= 0; i--) {
       const it = this.items[i]; it.life -= dt;
       if (it.kind === 'flash') { it.obj.scale.addScalar(it.grow * dt); it.obj.material.opacity = Math.max(0, it.life * 4); }
+      if (it.kind === 'muzzle') {
+        const k = it.life / it.maxLife; // 1 -> 0
+        const flicker = 0.75 + Math.random() * 0.35; const env = k > 0.7 ? (1 - k) / 0.3 : k / 0.7; // fast attack, decay
+        for (const p of it.parts) {
+          if (p.kind === 'core') { p.obj.material.opacity = env * flicker; p.obj.scale.setScalar(p.base * (0.6 + 0.6 * (1 - k))); }
+          else if (p.kind === 'tongue') { p.obj.material.opacity = env * flicker; p.obj.scale.z = p.len * (0.5 + 0.7 * (1 - k)); }
+          else if (p.kind === 'ring') { p.obj.material.opacity = Math.max(0, k * 0.8) * flicker; p.obj.scale.setScalar(p.base * (0.3 + 1.2 * (1 - k))); }
+        }
+        if (it.life <= 0) { it.parent.remove(it.obj); for (const p of it.parts) p.obj.material.dispose(); this.items.splice(i, 1); continue; }
+        continue;
+      }
+      if (it.kind === 'smokepuff') { const k = 1 - it.life / it.maxLife; it.obj.position.addScaledVector(it.vel, dt); it.vel.multiplyScalar(1 - 1.5 * dt); it.obj.scale.setScalar(it.grow * (0.5 + k * 1.6)); it.obj.material.opacity = it.peak * Math.sin(Math.min(1, k) * Math.PI); }
       if (it.kind === 'tracer') it.obj.material.opacity = Math.max(0, it.life * 15);
       if (it.life <= 0) { this.group.remove(it.obj); if (it.obj.geometry) it.obj.geometry.dispose(); if (it.obj.material) it.obj.material.dispose(); this.items.splice(i, 1); }
     }
@@ -209,7 +246,7 @@ class FX {
   // is a point inside any active smoke? (used by bot vision)
   inSmoke(p) { for (const s of this.smokes) if (s.life / s.maxLife > 0.08 && s.life / s.maxLife < 0.97 && p.distanceTo(s.pos) < s.radius) return true; return false; }
   clear() {
-    for (const it of this.items) this.group.remove(it.obj);
+    for (const it of this.items) (it.parent || this.group).remove(it.obj);
     this.items.length = 0; this.parts.length = 0;
     for (const s of this.smokes) for (const sp of s.sprites) this.group.remove(sp);
     this.smokes.length = 0;
@@ -217,3 +254,16 @@ class FX {
     this.spot.intensity = 0;
   }
 }
+
+// Muzzle flash profiles: sizes in metres, life in seconds.
+const MUZZLE_PROFILES = {
+  pistol:     { core: 0.32, coreOffset: 0.03, tongues: 2, length: 0.28, width: 0.12, jets: 0, jetLen: 0, jetOffset: 0, jetAngle: 0, ring: 0,    smoke: 0.35, smokeAlpha: 0.175, sparks: 3,  light: 5,  lightDist: 7,  lightColor: 0xffc070, tint: 0xffe4b0, life: 0.05 },
+  revolver:   { core: 0.42, coreOffset: 0.03, tongues: 3, length: 0.4,  width: 0.14, jets: 2, jetLen: 0.22, jetOffset: -0.12, jetAngle: Math.PI / 2, ring: 0.3, smoke: 0.5, smokeAlpha: 0.225, sparks: 6,  light: 9,  lightDist: 9,  lightColor: 0xffb860, tint: 0xffd9a0, life: 0.06 },
+  smg:        { core: 0.3,  coreOffset: 0.03, tongues: 3, length: 0.32, width: 0.11, jets: 0, jetLen: 0, jetOffset: 0, jetAngle: 0, ring: 0,    smoke: 0.3,  smokeAlpha: 0.125, sparks: 3,  light: 5,  lightDist: 7,  lightColor: 0xffc878, tint: 0xfff0c8, life: 0.045 },
+  ar:         { core: 0.4,  coreOffset: 0.04, tongues: 3, length: 0.55, width: 0.15, jets: 3, jetLen: 0.2, jetOffset: 0.02, jetAngle: Math.PI / 2.6, ring: 0.35, smoke: 0.4, smokeAlpha: 0.15, sparks: 5, light: 8, lightDist: 10, lightColor: 0xffbe70, tint: 0xffe0b0, life: 0.055 },
+  lmg:        { core: 0.5,  coreOffset: 0.05, tongues: 4, length: 0.7,  width: 0.2,  jets: 4, jetLen: 0.28, jetOffset: 0.02, jetAngle: Math.PI / 2.4, ring: 0.5, smoke: 0.55, smokeAlpha: 0.2, sparks: 7, light: 11, lightDist: 12, lightColor: 0xffb060, tint: 0xffd8a0, life: 0.06 },
+  shotgun:    { core: 0.7,  coreOffset: 0.06, tongues: 4, length: 0.9,  width: 0.3,  jets: 0, jetLen: 0, jetOffset: 0, jetAngle: 0, ring: 0.9,  smoke: 0.9,  smokeAlpha: 0.275, sparks: 16, light: 16, lightDist: 14, lightColor: 0xffa850, tint: 0xffcf90, life: 0.08 },
+  sniper:     { core: 0.6,  coreOffset: 0.06, tongues: 4, length: 1.2,  width: 0.22, jets: 4, jetLen: 0.45, jetOffset: 0.0, jetAngle: Math.PI / 2.2, ring: 1.1, smoke: 0.8, smokeAlpha: 0.25, sparks: 10, light: 18, lightDist: 16, lightColor: 0xffb868, tint: 0xffe6c0, life: 0.09 },
+  suppressed: { core: 0.12, coreOffset: 0.02, tongues: 1, length: 0.12, width: 0.06, jets: 0, jetLen: 0, jetOffset: 0, jetAngle: 0, ring: 0,    smoke: 0.5,  smokeAlpha: 0.15,  sparks: 1,  light: 1.5, lightDist: 4, lightColor: 0xffd0a0, tint: 0xffe8d0, life: 0.04 },
+  none:       { core: 0, coreOffset: 0, tongues: 0, length: 0, width: 0, jets: 0, jetLen: 0, jetOffset: 0, jetAngle: 0, ring: 0, smoke: 0, smokeAlpha: 0.0, sparks: 0, light: 0, lightDist: 1, lightColor: 0, tint: 0, life: 0.01 },
+};

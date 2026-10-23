@@ -230,6 +230,46 @@ const GEN = {
     ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
   },
+  // ---- muzzle flash layers (256px, soft gradients + noise) ----
+  flashCore() {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(31);
+    const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.12, 'rgba(255,250,220,1)'); g.addColorStop(0.3, 'rgba(255,200,90,0.85)'); g.addColorStop(0.55, 'rgba(255,120,30,0.35)'); g.addColorStop(1, 'rgba(255,60,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    // irregular hot spots
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 14; i++) { const a = rng.float(0, 6.28), r = rng.float(20, 70); const x = 128 + Math.cos(a) * r, y = 128 + Math.sin(a) * r; const gg = ctx.createRadialGradient(x, y, 0, x, y, rng.float(14, 40)); gg.addColorStop(0, 'rgba(255,230,160,0.55)'); gg.addColorStop(1, 'rgba(255,150,40,0)'); ctx.fillStyle = gg; ctx.fillRect(0, 0, w, h); }
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  },
+  flashTongue() {
+    // vertical flame tongue: bright at the base (bottom), tapering to the tip (top), jagged soft edges
+    const w = 128, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(37);
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 9; i++) {
+      const len = h * rng.float(0.55, 1.0), wid = w * rng.float(0.18, 0.5), off = rng.float(-12, 12);
+      const g = ctx.createLinearGradient(0, h, 0, h - len);
+      g.addColorStop(0, `rgba(255,255,235,${rng.float(0.35, 0.6)})`); g.addColorStop(0.25, `rgba(255,210,110,${rng.float(0.3, 0.5)})`); g.addColorStop(0.6, `rgba(255,130,40,${rng.float(0.15, 0.3)})`); g.addColorStop(1, 'rgba(255,70,10,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(w / 2 + off - wid / 2, h); ctx.quadraticCurveTo(w / 2 + off - wid * 0.2, h - len * 0.6, w / 2 + off + rng.float(-10, 10), h - len); ctx.quadraticCurveTo(w / 2 + off + wid * 0.2, h - len * 0.6, w / 2 + off + wid / 2, h); ctx.closePath(); ctx.fill();
+    }
+    // bright base
+    const g2 = ctx.createRadialGradient(w / 2, h - 10, 0, w / 2, h - 10, 60); g2.addColorStop(0, 'rgba(255,255,255,0.9)'); g2.addColorStop(1, 'rgba(255,200,100,0)'); ctx.fillStyle = g2; ctx.fillRect(0, 0, w, h);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;
+  },
+  flashRing() {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    const g = ctx.createRadialGradient(128, 128, 70, 128, 128, 128);
+    g.addColorStop(0, 'rgba(255,200,120,0)'); g.addColorStop(0.45, 'rgba(255,220,160,0.7)'); g.addColorStop(0.6, 'rgba(255,170,80,0.45)'); g.addColorStop(1, 'rgba(255,120,40,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  },
+  smokePuff() {
+    const w = 128, h = 128, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(41);
+    ctx.clearRect(0, 0, w, h);
+    for (let i = 0; i < 18; i++) { const x = 64 + rng.float(-22, 22), y = 64 + rng.float(-22, 22), r = rng.float(18, 40); const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, `rgba(200,200,210,${rng.float(0.08, 0.16)})`); g.addColorStop(1, 'rgba(200,200,210,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); }
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  },
   muzzle() {
     const w = 64, h = 64, c = canvas(w, h), ctx = c.getContext('2d');
     ctx.translate(32, 32);

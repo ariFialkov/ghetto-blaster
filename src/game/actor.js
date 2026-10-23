@@ -111,7 +111,7 @@ export class Actor {
         }
       }
     }
-    this.match.fx.muzzle(muzzle, dir, d.type === 'shotgun' || d.type === 'sniper');
+    this.match.fx.muzzle(muzzle, dir, d.type === 'melee' ? 'none' : d.sound, { firstPerson: this.isPlayer });
     if (!d.suppressed || this.isPlayer) this.match.fx.casing(muzzle, new THREE.Vector3(-Math.cos(this.body.yaw), 0, Math.sin(this.body.yaw)));
     this.match.audio('shot', this, null, { kind: d.sound });
     this.match.onShot(this, d);
