@@ -1,0 +1,195 @@
+// Ghetto Blaster — app state machine: title (cinematic) -> modes -> lobby -> match -> results.
+import * as THREE from 'three';
+import { Engine } from './core/engine.js';
+import { Input } from './core/input.js';
+import { RNG, hashString, damp } from './core/rng.js';
+import { initAudio, setVolume, sfx } from './audio/sfx.js';
+import { MAPS, loadMap } from './maps/index.js';
+import { Match } from './game/match.js';
+import { MODES } from './game/modes.js';
+import { getSave, persist, allLoadouts, resolveLoadout } from './game/loadouts.js';
+import { findStreak } from './game/streaks.js';
+import { HUD } from './ui/hud.js';
+import * as UI from './ui/menu.js';
+
+const $ = (id) => document.getElementById(id);
+const canvas = $('gl');
+const engine = new Engine(canvas);
+const input = new Input(canvas);
+const hud = new HUD();
+const save = getSave();
+let settings = save.settings;
+const params = new URLSearchParams(location.search);
+const DEBUG_TIME = params.has('t') ? Math.max(20, +params.get('t')) : 0; // ?t=60 shortens matches for testing
+const app = { state: 'boot', mapData: null, mapId: null, match: null, cin: null, mode: null, bet: 0, pick: null, lobbyTimers: [] };
+if (input.mobile) document.body.classList.add('mobile');
+
+// ---------------- PWA ----------------
+if ('serviceWorker' in navigator && location.protocol !== 'file:') { window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {})); }
+function updateRotateHint() { const portrait = window.innerHeight > window.innerWidth; $('rotate-hint').classList.toggle('hidden', !(input.mobile && portrait)); }
+window.addEventListener('resize', updateRotateHint); updateRotateHint();
+
+function applySettings(s) {
+  settings = s; save.settings = s; persist();
+  input.sensitivity = s.sensitivity; input.touchSensitivity = s.touchSensitivity; input.invertY = s.invertY; input.adsHold = s.adsHold;
+  setVolume(s.volume); engine.setQuality(s.quality);
+  if (app.match && app.match.player) { app.match.player.fov = s.fov; app.match.player.sensitivity = 1; }
+}
+applySettings(settings);
+
+// ---------------- app state ----------------
+const mapCache = new Map();
+async function getMap(id) {
+  if (mapCache.has(id)) return mapCache.get(id);
+  const { def, build } = await loadMap(id); const data = build(); data.def = def; mapCache.set(id, data); return data;
+}
+function clearSceneMatch() { if (app.match) { app.match.dispose(); app.match = null; } }
+
+// ---------------- title / cinematic ----------------
+let cinIndex = 0, cinT = 0, cinFrom = null, cinTo = null;
+async function enterTitle(mapId = null) {
+  app.state = 'title'; input.setEnabled(false); input.releaseLock(); hud.hide(); engine.start();
+  clearSceneMatch();
+  const rng = new RNG(Date.now() & 0xffff);
+  app.mapId = mapId || rng.pick(MAPS).id;
+  app.mapData = await getMap(app.mapId);
+  engine.setEnvironment(app.mapData.def.env);
+  app.match = new Match({ engine, input, map: app.mapData, mode: MODES.tdm, settings, seed: rng.int(1, 1e9), loadout: null, mapId: app.mapId, cinematic: true });
+  app.match.goLive();
+  cinIndex = 0; cinT = 0; setupCinematicShot();
+  UI.showTitle(app.mapData.def.name, save.wallet);
+  engine.start();
+}
+function setupCinematicShot() {
+  const pts = app.mapData.cinematicPoints.length ? app.mapData.cinematicPoints : [{ x: 40, y: 20, z: 40, lookX: 0, lookZ: 0 }];
+  const p = pts[cinIndex % pts.length]; cinFrom = p; cinTo = pts[(cinIndex + 1) % pts.length]; cinT = 0;
+}
+function updateCinematic(dt) {
+  const cam = engine.camera; cinT += dt; const dur = 9;
+  const k = Math.min(1, cinT / dur); const e = k * k * (3 - 2 * k);
+  const ang = cinT * 0.12;
+  // orbit around the look-at point, drifting between shots
+  const lx = cinFrom.lookX + (cinTo.lookX - cinFrom.lookX) * e, lz = cinFrom.lookZ + (cinTo.lookZ - cinFrom.lookZ) * e;
+  const r = Math.hypot(cinFrom.x - cinFrom.lookX, cinFrom.z - cinFrom.lookZ); const a0 = Math.atan2(cinFrom.x - cinFrom.lookX, cinFrom.z - cinFrom.lookZ);
+  const y = cinFrom.y + (cinTo.y - cinFrom.y) * e;
+  cam.position.set(lx + Math.sin(a0 + ang) * r, y, lz + Math.cos(a0 + ang) * r);
+  cam.lookAt(lx, 2, lz); if (cam.fov !== 55) { cam.fov = 55; cam.updateProjectionMatrix(); }
+  engine.updateSunTarget(new THREE.Vector3(lx, 0, lz));
+  if (cinT >= dur) { cinIndex++; setupCinematicShot(); }
+}
+// snapshot the cinematic views to use as mode panel art
+function captureArts() {
+  const cam = engine.camera; const arts = []; const pts = app.mapData.cinematicPoints.length ? app.mapData.cinematicPoints : [{ x: 40, y: 20, z: 40, lookX: 0, lookZ: 0 }];
+  const old = { pos: cam.position.clone(), q: cam.quaternion.clone() };
+  const rt = new THREE.WebGLRenderTarget(512, 384); const buf = new Uint8Array(512 * 384 * 4); const c = document.createElement('canvas'); c.width = 512; c.height = 384; const ctx = c.getContext('2d');
+  for (let i = 0; i < 3; i++) { const p = pts[i % pts.length]; cam.position.set(p.x, p.y, p.z); cam.lookAt(p.lookX, 2, p.lookZ); engine.renderer.setRenderTarget(rt); engine.renderer.render(engine.scene, cam); engine.renderer.readRenderTargetPixels(rt, 0, 0, 512, 384, buf); const img = ctx.createImageData(512, 384); for (let y = 0; y < 384; y++) img.data.set(buf.subarray(y * 512 * 4, (y + 1) * 512 * 4), (383 - y) * 512 * 4); ctx.putImageData(img, 0, 0); arts.push(c.toDataURL('image/jpeg', 0.8)); }
+  engine.renderer.setRenderTarget(null); rt.dispose(); cam.position.copy(old.pos); cam.quaternion.copy(old.q);
+  return arts;
+}
+
+// ---------------- modes ----------------
+function enterModes() {
+  app.state = 'modes'; initAudio(); sfx('ui');
+  const arts = captureArts();
+  UI.showModes(arts, save.wallet, (mode) => enterLobby(mode));
+}
+
+// ---------------- lobby ----------------
+async function enterLobby(mode) {
+  app.state = 'lobby'; app.mode = mode; UI.hideModes();
+  const rng = new RNG(Date.now() & 0xfffff);
+  const mapId = rng.pick(MAPS).id; app.mapId = mapId;
+  const { def } = await loadMap(mapId);
+  UI.showLobby(mode, def, save.wallet, (b) => { app.bet = b; });
+  $('lobby-cancel').onclick = () => { app.lobbyTimers.forEach(clearTimeout); app.lobbyTimers = []; sfx('click'); enterTitle(app.mapId); };
+  const seed = rng.int(1, 1e9); app.seed = seed;
+  // pre-build the map and the match (bots) now so the player list is real
+  const mapData = await getMap(mapId);
+  const loadout = allLoadouts().find((l) => l.id === (save.lastLoadout || 'runner') && !l.empty) || allLoadouts()[0];
+  app.pick = { loadoutId: loadout.id, streaks: null };
+  engine.setEnvironment(def.env);
+  clearSceneMatch();
+  const name = (settings.name || 'YOU').toUpperCase();
+  const modeDef = DEBUG_TIME ? { ...mode, timeLimit: DEBUG_TIME } : mode;
+  app.match = new Match({ engine, input, map: mapData, mode: modeDef, settings, seed, loadout, mapId, bet: app.bet, playerName: name });
+  const m = app.match;
+  const total = m.actors.length; const list = m.actors.slice();
+  const t = (ms, fn) => app.lobbyTimers.push(setTimeout(fn, ms));
+  const t1 = 1600 + rng.int(0, 1200), t2 = t1 + 1800 + rng.int(0, 1200);
+  t(t1, () => { UI.lobbyStatus('FINDING PLAYERS'); UI.lobbySlots(mode, [m.player], total); sfx('beep', { freq: 660 }); });
+  for (let i = 1; i < total; i++) t(t1 + 250 + ((t2 - t1 - 400) * i) / total, () => { UI.lobbySlots(mode, list.slice(0, i + 1), total); sfx('click', { vol: 0.5 }); });
+  t(t2 + 300, () => { UI.lobbyStatus('STARTING MATCH'); sfx('beep', { freq: 880 }); });
+  t(t2 + 1300, () => startMatch());
+}
+
+// ---------------- match ----------------
+function startMatch() {
+  app.state = 'match'; const m = app.match; m.bet = app.bet;
+  if (app.bet > 0) { save.wallet -= app.bet; save.stats.bets++; persist(); }
+  UI.hideAll();
+  hud.bind(m, { onOpenLoadout: () => openLoadout(), onScoreboard: (on) => (on ? UI.showScoreboard(m, quitMatch) : UI.hideScoreboard()), onPause: () => pauseMatch() });
+  m.events.live = () => { UI.hideLoadoutSelector(); if (!input.mobile && !input.locked) input.requestLock(); };
+  m.events.end = (res) => endMatch(res);
+  input.setEnabled(true);
+  openLoadout();
+  // pointer lock loss during a live desktop match = pause
+  document.addEventListener('pointerlockchange', onLockChange);
+}
+function onLockChange() { if (app.state === 'match' && !document.pointerLockElement && !input.mobile && app.match && app.match.state === 'live' && $('screen-loadout').classList.contains('hidden') && $('screen-dialog').classList.contains('hidden')) pauseMatch(); }
+function openLoadout() {
+  const m = app.match; if (!m || m.state === 'ended') return;
+  input.releaseLock();
+  UI.showLoadoutSelector(app.mapId, app.pick, (pick) => { app.pick = pick; applyPick(); }, () => { if (m.state !== 'pregame') { /* already live */ } if (!input.mobile) input.requestLock(); });
+}
+function applyPick() {
+  const m = app.match; if (!m) return;
+  const lo = allLoadouts().find((l) => l.id === app.pick.loadoutId) || allLoadouts()[0];
+  if (m.state === 'pregame') m.player.setLoadout(resolveLoadout(lo)); else m.player.nextLoadout = resolveLoadout(lo);
+  m.streakState.picks = (app.pick.streaks || []).map((id) => findStreak(app.mapId, id));
+  hud.renderStreaks(true);
+}
+function pauseMatch() {
+  if (app.state !== 'match' || !app.match || app.match.state === 'ended') return;
+  if (!$('screen-dialog').classList.contains('hidden')) return;
+  input.setEnabled(false);
+  UI.openDialog('PAUSED', `<div style="display:flex;gap:12px;flex-wrap:wrap"><button class="big-btn" id="p-resume">RESUME</button><button class="pill" id="p-settings">SETTINGS</button><button class="pill" id="p-quit">QUIT MATCH</button></div>`, () => { input.setEnabled(true); if (!input.mobile) input.requestLock(); });
+  $('p-resume').onclick = () => { UI.closeDialog(); input.setEnabled(true); if (!input.mobile) input.requestLock(); };
+  $('p-settings').onclick = () => { UI.openSettings(settings, applySettings); $('dialog-close').onclick = () => { UI.closeDialog(); input.setEnabled(true); if (!input.mobile) input.requestLock(); }; };
+  $('p-quit').onclick = () => { UI.closeDialog(); quitMatch(); };
+}
+function quitMatch() { document.removeEventListener('pointerlockchange', onLockChange); UI.hideScoreboard(); hud.hide(); input.setEnabled(false); enterTitle(app.mapId); }
+function endMatch(res) {
+  document.removeEventListener('pointerlockchange', onLockChange);
+  app.state = 'results'; input.setEnabled(false); input.releaseLock(); UI.hideScoreboard(); hud.hide();
+  const m = app.match; const p = m.player; const mode = m.mode;
+  let payout = 0; const betWon = mode.teams ? res.win : res.top3;
+  if (m.bet > 0 && betWon) { payout = Math.round(m.bet * mode.bet.odds); save.wallet += payout; save.stats.won += payout; }
+  if (save.wallet < 100) save.wallet = 100; // the house fronts you a new stack
+  save.stats.matches++; if (res.win) save.stats.wins++; save.stats.kills += p.kills; save.stats.deaths += p.deaths; save.stats.bestStreak = Math.max(save.stats.bestStreak, p.bestStreak); persist();
+  sfx(res.win ? 'streak' : 'bass');
+  UI.showResults(res, m, payout, save.wallet, () => enterLobby(mode), () => enterTitle(app.mapId));
+}
+
+// ---------------- frame ----------------
+engine.onFrame = (dt) => {
+  if (app.state === 'title' || app.state === 'modes') { if (app.match) { app.match.update(dt); updateCinematic(dt); } return; }
+  if (app.state === 'lobby') { if (app.match) { updateCinematicLobby(dt); } return; }
+  if (app.state === 'match' || app.state === 'results') {
+    const m = app.match; if (!m) return;
+    if (app.state === 'match' && !$('screen-dialog').classList.contains('hidden')) { /* paused: freeze */ return; }
+    m.update(dt);
+    if (app.state === 'match') { hud.update(dt); if (m.state === 'pregame') UI.loadoutTimer(m.pregameT); if (m.player.nextLoadout && m.player.alive && m.player.spawnProtect > 1.9) { m.player.setLoadout(m.player.nextLoadout); m.player.nextLoadout = null; } }
+  }
+};
+function updateCinematicLobby(dt) { const cam = engine.camera; const pts = app.match.map.cinematicPoints; const p = pts[0] || { x: 40, y: 20, z: 40, lookX: 0, lookZ: 0 }; const t = performance.now() / 1000; const r = Math.hypot(p.x - p.lookX, p.z - p.lookZ); cam.position.set(p.lookX + Math.sin(t * 0.1) * r, p.y, p.lookZ + Math.cos(t * 0.1) * r); cam.lookAt(p.lookX, 2, p.lookZ); }
+
+// ---------------- title interactions ----------------
+$('screen-title').addEventListener('click', (e) => { if (e.target.closest('button')) return; if (app.state !== 'title') return; enterModes(); });
+$('screen-title').querySelectorAll('[data-open]').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); initAudio(); sfx('click'); const k = b.dataset.open; if (k === 'controls') UI.openControls(input.mobile); else if (k === 'settings') UI.openSettings(settings, applySettings); else UI.openLoadoutEditor(); }; });
+document.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => { sfx('click'); UI.hideModes(); UI.showTitle(app.mapData.def.name, save.wallet); app.state = 'title'; }; });
+window.addEventListener('keydown', (e) => { if (e.code === 'Escape' && app.state === 'modes') { UI.hideModes(); UI.showTitle(app.mapData.def.name, save.wallet); app.state = 'title'; } });
+// first touch anywhere unlocks audio
+window.addEventListener('pointerdown', () => initAudio(), { once: true });
+
+window.__gb = { app, engine, input, hud, save };
+enterTitle();

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1" />
+  <meta name="theme-color" content="#0a0a0c" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Ghetto Blaster" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <title>Ghetto Blaster</title>
+  <link rel="stylesheet" href="./src/ui/style.css" />
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <!-- TITLE SCREEN -->
+  <section id="screen-title" class="screen">
+    <div class="title-vignette"></div>
+    <div class="title-top">
+      <div class="brand"><span class="brand-ghetto">GHETTO</span><span class="brand-blaster">BLASTER</span></div>
+      <div class="title-sub" id="title-map-name">SKID ROW</div>
+    </div>
+    <div class="title-cta" id="title-cta">CLICK ANYWHERE TO PLAY</div>
+    <div class="title-buttons">
+      <button class="pill" data-open="controls">CONTROLS</button>
+      <button class="pill" data-open="settings">SETTINGS</button>
+      <button class="pill" data-open="loadouts">LOADOUTS</button>
+    </div>
+    <div class="title-wallet" id="title-wallet"></div>
+  </section>
+
+  <!-- MODE SELECT -->
+  <section id="screen-modes" class="screen hidden">
+    <div class="modes-header">
+      <button class="back" data-back="title">&larr; BACK</button>
+      <h1>PICK YOUR BEEF</h1>
+      <div class="wallet" id="modes-wallet"></div>
+    </div>
+    <div class="modes-grid" id="modes-grid"></div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="screen-lobby" class="screen hidden">
+    <div class="lobby-card">
+      <div class="lobby-status" id="lobby-status">SEARCHING FOR LOBBY</div>
+      <div class="lobby-mode" id="lobby-mode"></div>
+      <div class="lobby-map" id="lobby-map"></div>
+      <div class="lobby-slots" id="lobby-slots"></div>
+      <div class="lobby-bet" id="lobby-bet"></div>
+      <button class="back lobby-cancel" id="lobby-cancel">CANCEL</button>
+    </div>
+  </section>
+
+  <!-- LOADOUT SELECTOR (pre-game) -->
+  <section id="screen-loadout" class="screen overlay hidden">
+    <div class="loadout-panel">
+      <div class="loadout-head">
+        <h2>SELECT LOADOUT</h2>
+        <div class="loadout-timer" id="loadout-timer"></div>
+      </div>
+      <div class="loadout-body">
+        <div class="loadout-list" id="loadout-list"></div>
+        <div class="loadout-detail" id="loadout-detail"></div>
+        <div class="streak-pick" id="streak-pick"></div>
+      </div>
+      <div class="loadout-foot">
+        <button class="big-btn" id="loadout-ready">READY</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- HUD -->
+  <section id="hud" class="screen hidden">
+    <div class="crosshair" id="crosshair"><i></i><i></i><i></i><i></i><b></b></div>
+    <div class="hitmarker" id="hitmarker"></div>
+    <div class="scope" id="scope"></div>
+    <div class="flash" id="flash"></div>
+    <div class="damage-vignette" id="damage-vignette"></div>
+    <div class="dmg-indicators" id="dmg-indicators"></div>
+
+    <div class="hud-top">
+      <div class="hud-score" id="hud-score"></div>
+      <div class="hud-timer" id="hud-timer">8:00</div>
+      <div class="hud-objective" id="hud-objective"></div>
+    </div>
+    <div class="killfeed" id="killfeed"></div>
+    <div class="hud-center-msg" id="hud-msg"></div>
+    <div class="hud-streak-msg" id="hud-streak-msg"></div>
+
+    <div class="hud-left">
+      <canvas id="minimap" width="180" height="180"></canvas>
+      <div class="hud-name" id="hud-name"></div>
+      <div class="streaks-bar" id="streaks-bar"></div>
+    </div>
+    <div class="hud-right">
+      <div class="hud-health"><div class="bar" id="health-bar"></div></div>
+      <div class="hud-weapon" id="hud-weapon"></div>
+      <div class="hud-ammo"><span id="ammo-mag">30</span><span class="ammo-res" id="ammo-res">/ 120</span></div>
+      <div class="hud-equip">
+        <div class="eq" id="eq-lethal"></div>
+        <div class="eq" id="eq-tactical"></div>
+      </div>
+    </div>
+
+    <button class="hud-btn reopen-loadout" id="btn-loadout">LOADOUT</button>
+
+    <!-- mobile controls -->
+    <div id="mobile-controls" class="hidden">
+      <div class="joystick" id="joystick"><div class="joy-base"><div class="joy-knob" id="joy-knob"></div></div></div>
+      <div class="look-area" id="look-area"></div>
+      <button class="mbtn fire" id="m-fire"></button>
+      <button class="mbtn ads" id="m-ads">ADS</button>
+      <button class="mbtn jump" id="m-jump">JUMP</button>
+      <button class="mbtn crouch" id="m-crouch">DUCK</button>
+      <button class="mbtn peek" id="m-peek">PEEK</button>
+      <button class="mbtn swap" id="m-swap">SWAP</button>
+      <button class="mbtn reload" id="m-reload">RLD</button>
+      <button class="mbtn lethal" id="m-lethal">LETHAL</button>
+      <button class="mbtn tactical" id="m-tactical">TAC</button>
+      <button class="mbtn sprint" id="m-sprint">RUN</button>
+      <button class="mbtn score" id="m-score">SCORE</button>
+    </div>
+  </section>
+
+  <!-- SCOREBOARD -->
+  <section id="screen-scoreboard" class="screen overlay hidden">
+    <div class="scoreboard" id="scoreboard"></div>
+  </section>
+
+  <!-- RESULTS -->
+  <section id="screen-results" class="screen hidden">
+    <div class="results-card">
+      <div class="results-title" id="results-title">VICTORY</div>
+      <div class="results-sub" id="results-sub"></div>
+      <div class="results-board" id="results-board"></div>
+      <div class="results-bet" id="results-bet"></div>
+      <div class="results-actions">
+        <button class="big-btn" id="results-again">RUN IT BACK</button>
+        <button class="pill" id="results-menu">MAIN MENU</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS / CONTROLS / LOADOUT EDITOR -->
+  <section id="screen-dialog" class="screen overlay hidden">
+    <div class="dialog" id="dialog">
+      <div class="dialog-head"><h2 id="dialog-title"></h2><button class="back" id="dialog-close">CLOSE</button></div>
+      <div class="dialog-body" id="dialog-body"></div>
+    </div>
+  </section>
+
+  <div id="rotate-hint" class="hidden">ROTATE YOUR PHONE TO LANDSCAPE</div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

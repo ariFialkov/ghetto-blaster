@@ -1,0 +1,249 @@
+// Procedural canvas textures so the game ships with zero image assets.
+import * as THREE from 'three';
+import { RNG } from './rng.js';
+
+const cache = new Map();
+
+function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function finish(c, repeat = [1, 1], opts = {}) {
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeat[0], repeat[1]);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = opts.aniso || 4;
+  t.needsUpdate = true;
+  return t;
+}
+function noise(ctx, w, h, rng, amount = 0.08, count = 4000) {
+  for (let i = 0; i < count; i++) {
+    const a = rng.float(0, amount);
+    ctx.fillStyle = rng.chance(0.5) ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`;
+    ctx.fillRect(rng.float(0, w), rng.float(0, h), rng.float(1, 4), rng.float(1, 4));
+  }
+}
+function grime(ctx, w, h, rng, n = 12) {
+  for (let i = 0; i < n; i++) {
+    const g = ctx.createRadialGradient(rng.float(0, w), rng.float(0, h), 0, rng.float(0, w), rng.float(0, h), rng.float(w * 0.1, w * 0.4));
+    g.addColorStop(0, `rgba(0,0,0,${rng.float(0.05, 0.25)})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  }
+}
+
+export function tex(name, params = {}) {
+  const key = name + JSON.stringify(params);
+  if (cache.has(key)) return cache.get(key);
+  const t = GEN[name](params);
+  cache.set(key, t);
+  return t;
+}
+
+const GEN = {
+  brick({ color = '#8a3b2a', mortar = '#4a4038', seed = 1, dirty = 0.6 } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = mortar; ctx.fillRect(0, 0, w, h);
+    const bw = 32, bh = 16;
+    for (let y = 0; y < h; y += bh) {
+      const off = (y / bh) % 2 ? bw / 2 : 0;
+      for (let x = -bw; x < w; x += bw) {
+        const col = new THREE.Color(color);
+        col.offsetHSL(rng.float(-0.01, 0.01), rng.float(-0.05, 0.05), rng.float(-0.06, 0.06));
+        ctx.fillStyle = col.getStyle();
+        ctx.fillRect(x + off + 1, y + 1, bw - 2, bh - 2);
+      }
+    }
+    noise(ctx, w, h, rng, 0.1, 3000); grime(ctx, w, h, rng, 10 * dirty);
+    return finish(c, [2, 2]);
+  },
+  concrete({ color = '#8d8d86', seed = 2, dirty = 0.5 } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    noise(ctx, w, h, rng, 0.12, 6000);
+    for (let i = 0; i < 6; i++) { ctx.strokeStyle = `rgba(0,0,0,${rng.float(0.1, 0.3)})`; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(rng.float(0, w), rng.float(0, h)); ctx.lineTo(rng.float(0, w), rng.float(0, h)); ctx.stroke(); }
+    grime(ctx, w, h, rng, 12 * dirty);
+    return finish(c, [2, 2]);
+  },
+  plaster({ color = '#d9c9a3', seed = 3, dirty = 0.6 } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    noise(ctx, w, h, rng, 0.07, 4000);
+    // peeling patches
+    for (let i = 0; i < 5 * dirty; i++) { ctx.fillStyle = `rgba(90,70,60,${rng.float(0.2, 0.5)})`; ctx.beginPath(); ctx.ellipse(rng.float(0, w), rng.float(0, h), rng.float(6, 30), rng.float(4, 18), rng.float(0, 3), 0, 7); ctx.fill(); }
+    grime(ctx, w, h, rng, 14 * dirty);
+    return finish(c, [2, 2]);
+  },
+  asphalt({ seed = 4, color = '#2d2d31' } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    noise(ctx, w, h, rng, 0.14, 9000);
+    for (let i = 0; i < 4; i++) { ctx.strokeStyle = `rgba(0,0,0,${rng.float(0.2, 0.4)})`; ctx.lineWidth = rng.float(1, 2); ctx.beginPath(); let x = rng.float(0, w), y = rng.float(0, h); ctx.moveTo(x, y); for (let k = 0; k < 6; k++) { x += rng.float(-30, 30); y += rng.float(-30, 30); ctx.lineTo(x, y); } ctx.stroke(); }
+    grime(ctx, w, h, rng, 8);
+    return finish(c, [8, 8]);
+  },
+  sidewalk({ seed = 5, color = '#9a9890' } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    noise(ctx, w, h, rng, 0.1, 5000);
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2;
+    for (let x = 0; x <= w; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = 0; y <= h; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+    grime(ctx, w, h, rng, 6);
+    return finish(c, [4, 4]);
+  },
+  dirt({ seed = 6, color = '#6b5a3e' } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    noise(ctx, w, h, rng, 0.15, 9000); grime(ctx, w, h, rng, 10);
+    for (let i = 0; i < 200; i++) { ctx.fillStyle = `rgba(80,110,40,${rng.float(0.1, 0.4)})`; ctx.fillRect(rng.float(0, w), rng.float(0, h), rng.float(2, 6), rng.float(2, 6)); }
+    return finish(c, [6, 6]);
+  },
+  grass({ seed = 7, color = '#4f6b2e' } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 3000; i++) { ctx.fillStyle = `rgba(${rng.int(40, 120)},${rng.int(90, 150)},${rng.int(20, 60)},0.6)`; ctx.fillRect(rng.float(0, w), rng.float(0, h), 2, rng.float(2, 6)); }
+    grime(ctx, w, h, rng, 6);
+    return finish(c, [6, 6]);
+  },
+  cobble({ seed = 8, color = '#6f6a63' } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = '#3b3833'; ctx.fillRect(0, 0, w, h);
+    for (let y = 0; y < h; y += 16) for (let x = 0; x < w; x += 16) {
+      const col = new THREE.Color(color); col.offsetHSL(0, 0, rng.float(-0.08, 0.08));
+      ctx.fillStyle = col.getStyle(); ctx.beginPath(); ctx.roundRect(x + 1 + ((y / 16) % 2) * 8, y + 1, 14, 14, 4); ctx.fill();
+    }
+    noise(ctx, w, h, rng, 0.1, 4000); grime(ctx, w, h, rng, 8);
+    return finish(c, [6, 6]);
+  },
+  tile({ seed = 9, color = '#b8b2a4', line = '#5a554c', size = 32 } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = line; ctx.lineWidth = 2;
+    for (let x = 0; x <= w; x += size) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = 0; y <= h; y += size) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+    noise(ctx, w, h, rng, 0.08, 3000); grime(ctx, w, h, rng, 6);
+    return finish(c, [4, 4]);
+  },
+  metal({ seed = 10, color = '#6e7278', rust = 0.3 } = {}) {
+    const w = 128, h = 128, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    noise(ctx, w, h, rng, 0.1, 2000);
+    for (let i = 0; i < 20 * rust; i++) { ctx.fillStyle = `rgba(140,70,30,${rng.float(0.2, 0.6)})`; ctx.beginPath(); ctx.ellipse(rng.float(0, w), rng.float(0, h), rng.float(3, 14), rng.float(3, 10), 0, 0, 7); ctx.fill(); }
+    return finish(c, [1, 1]);
+  },
+  corrugated({ seed = 11, color = '#8a8f93', rust = 0.6 } = {}) {
+    const w = 128, h = 128, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    for (let x = 0; x < w; x += 8) { ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x, 0, 3, h); ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(x + 4, 0, 2, h); }
+    for (let i = 0; i < 30 * rust; i++) { ctx.fillStyle = `rgba(150,70,30,${rng.float(0.2, 0.7)})`; ctx.beginPath(); ctx.ellipse(rng.float(0, w), rng.float(0, h), rng.float(3, 16), rng.float(3, 12), 0, 0, 7); ctx.fill(); }
+    return finish(c, [2, 2]);
+  },
+  // Building facade with windows; rows x cols per texture tile.
+  facade({ seed = 12, wall = '#8a3b2a', style = 'brick', cols = 3, rows = 2, lit = 0.35, winColor = '#1a2230', frame = '#2b2b2b', balcony = false, shutters = false, ac = true } = {}) {
+    const w = 256, h = 256, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    // base wall
+    if (style === 'brick') {
+      ctx.fillStyle = '#4a4038'; ctx.fillRect(0, 0, w, h);
+      for (let y = 0; y < h; y += 10) { const off = (y / 10) % 2 ? 10 : 0; for (let x = -20; x < w; x += 20) { const col = new THREE.Color(wall); col.offsetHSL(0, rng.float(-0.04, 0.04), rng.float(-0.06, 0.06)); ctx.fillStyle = col.getStyle(); ctx.fillRect(x + off + 1, y + 1, 18, 8); } }
+    } else if (style === 'glass') {
+      ctx.fillStyle = wall; ctx.fillRect(0, 0, w, h);
+    } else {
+      ctx.fillStyle = wall; ctx.fillRect(0, 0, w, h); noise(ctx, w, h, rng, 0.08, 3000);
+    }
+    const cw = w / cols, ch = h / rows;
+    for (let r = 0; r < rows; r++) for (let cI = 0; cI < cols; cI++) {
+      const x = cI * cw + cw * 0.25, y = r * ch + ch * 0.2, ww = cw * 0.5, wh = ch * 0.55;
+      if (style === 'glass') { ww && (ctx.fillStyle = rng.chance(lit) ? '#8fb4d9' : '#2a3a4c'); ctx.fillRect(cI * cw + 2, r * ch + 2, cw - 4, ch - 4); ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(cI * cw + 2, r * ch + 2, cw * 0.3, ch - 4); continue; }
+      ctx.fillStyle = frame; ctx.fillRect(x - 3, y - 3, ww + 6, wh + 6);
+      ctx.fillStyle = rng.chance(lit) ? `rgb(${rng.int(200, 255)},${rng.int(170, 220)},${rng.int(90, 150)})` : winColor;
+      ctx.fillRect(x, y, ww, wh);
+      ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(x, y, ww * 0.4, wh);
+      ctx.fillStyle = frame; ctx.fillRect(x + ww / 2 - 1, y, 2, wh); ctx.fillRect(x, y + wh / 2 - 1, ww, 2);
+      if (rng.chance(0.25)) { ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x, y, ww, wh * rng.float(0.3, 0.8)); } // blinds
+      if (shutters && rng.chance(0.5)) { ctx.fillStyle = '#3d5a3a'; ctx.fillRect(x - ww * 0.3, y, ww * 0.26, wh); ctx.fillRect(x + ww + ww * 0.04, y, ww * 0.26, wh); }
+      if (balcony) { ctx.fillStyle = '#333'; ctx.fillRect(x - ww * 0.3, y + wh, ww * 1.6, 5); for (let b = 0; b < 8; b++) ctx.fillRect(x - ww * 0.3 + b * ww * 0.22, y + wh - 10, 2, 10); }
+      if (ac && rng.chance(0.22)) { ctx.fillStyle = '#9aa0a6'; ctx.fillRect(x + ww * 0.1, y + wh * 0.6, ww * 0.4, wh * 0.4); ctx.fillStyle = '#555'; ctx.fillRect(x + ww * 0.14, y + wh * 0.66, ww * 0.32, wh * 0.28); }
+      // sill
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x - 4, y + wh + 3, ww + 8, 3);
+    }
+    grime(ctx, w, h, rng, 8);
+    // drip streaks
+    for (let i = 0; i < 6; i++) { ctx.fillStyle = `rgba(0,0,0,${rng.float(0.05, 0.2)})`; const x = rng.float(0, w); ctx.fillRect(x, 0, rng.float(1, 4), h); }
+    return finish(c, [1, 1]);
+  },
+  graffiti({ seed = 13, base = '#777', text = 'GB' } = {}) {
+    const w = 256, h = 128, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.clearRect(0, 0, w, h);
+    const colors = ['#ff2d95', '#00e5ff', '#ffe600', '#7cff00', '#ff6a00', '#b36bff', '#ffffff'];
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = rng.pick(colors); ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.ellipse(rng.float(40, w - 40), rng.float(20, h - 20), rng.float(30, 80), rng.float(14, 40), rng.float(-0.4, 0.4), 0, 7); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    ctx.font = `bold ${rng.int(60, 90)}px Impact, Arial Black, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 8; ctx.strokeStyle = '#000'; ctx.strokeText(text, w / 2, h / 2);
+    ctx.fillStyle = rng.pick(colors); ctx.fillText(text, w / 2, h / 2);
+    ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.strokeText(text, w / 2, h / 2);
+    const t = finish(c, [1, 1]); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;
+  },
+  sign({ seed = 14, text = 'LIQUOR', bg = '#b3121b', fg = '#fff', w = 256, h = 64 } = {}) {
+    const c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(0, h - 8, w, 8);
+    ctx.font = `bold ${Math.floor(h * 0.62)}px Impact, Arial Black, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = fg; ctx.fillText(text, w / 2, h / 2 - 2);
+    const t = finish(c, [1, 1]); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;
+  },
+  neon({ seed = 15, text = 'OPEN', color = '#ff2d95', w = 256, h = 96 } = {}) {
+    const c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = `bold ${Math.floor(h * 0.6)}px Impact, Arial Black, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = color; ctx.shadowBlur = 18; ctx.fillStyle = color; ctx.fillText(text, w / 2, h / 2);
+    ctx.shadowBlur = 0; ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.85; ctx.fillText(text, w / 2, h / 2);
+    const t = finish(c, [1, 1]); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;
+  },
+  roadMarks({ dashed = true } = {}) {
+    const w = 64, h = 256, c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(240,220,120,0.85)';
+    if (dashed) { for (let y = 0; y < h; y += 64) ctx.fillRect(w / 2 - 3, y, 6, 32); } else ctx.fillRect(w / 2 - 3, 0, 6, h);
+    return finish(c, [1, 1]);
+  },
+  water({ seed = 16 } = {}) {
+    const w = 128, h = 128, c = canvas(w, h), ctx = c.getContext('2d'), rng = new RNG(seed);
+    ctx.fillStyle = '#2f4f5a'; ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 300; i++) { ctx.fillStyle = `rgba(255,255,255,${rng.float(0.03, 0.12)})`; ctx.fillRect(rng.float(0, w), rng.float(0, h), rng.float(4, 20), 1); }
+    return finish(c, [4, 4]);
+  },
+  cloth({ seed = 17, color = '#c0392b', stripe = '#f5f5f5' } = {}) {
+    const w = 64, h = 64, c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = stripe; for (let x = 0; x < w; x += 16) ctx.fillRect(x, 0, 8, h);
+    return finish(c, [2, 1]);
+  },
+  skin({ color = '#8d5a3b' } = {}) {
+    const w = 16, h = 16, c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+    return finish(c, [1, 1]);
+  },
+  particle() {
+    const w = 64, h = 64, c = canvas(w, h), ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.4, 'rgba(255,255,255,0.5)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  },
+  muzzle() {
+    const w = 64, h = 64, c = canvas(w, h), ctx = c.getContext('2d');
+    ctx.translate(32, 32);
+    for (let i = 0; i < 8; i++) { ctx.rotate(Math.PI / 4); ctx.fillStyle = 'rgba(255,200,80,0.9)'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(28, -4); ctx.lineTo(28, 4); ctx.fill(); }
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 20); g.addColorStop(0, 'rgba(255,255,220,1)'); g.addColorStop(1, 'rgba(255,160,40,0)');
+    ctx.fillStyle = g; ctx.fillRect(-32, -32, 64, 64);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  },
+};
+
+export function skyGradient(top = '#2b3a5c', horizon = '#d99a62', bottom = '#1a1a1f') {
+  const c = canvas(4, 256), ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, top); g.addColorStop(0.55, horizon); g.addColorStop(1, bottom);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 4, 256);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.mapping = THREE.EquirectangularReflectionMapping; return t;
+}
