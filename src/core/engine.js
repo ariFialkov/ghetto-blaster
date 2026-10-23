@@ -27,6 +27,10 @@ export class Engine {
     this._resize();
     window.addEventListener('resize', () => this._resize());
     this.fx = new FX(this.scene);
+    // Fixed pool of map lights: the nearest N defined lights are streamed through these slots with fades.
+    // Keeping the light COUNT constant avoids shader recompiles and keeps per-pixel cost identical on every map.
+    this.mapPool = []; this.mapLightDefs = []; this.maxMapLights = 8; this.mapLightT = 0;
+    for (let i = 0; i < 8; i++) { const l = new THREE.PointLight(0xffffff, 0, 10, 1.6); l.position.set(0, -200, 0); l.userData.keep = true; this.scene.add(l); this.mapPool.push({ l, def: null, target: 0, cur: 0 }); }
     this._loop = this._loop.bind(this);
     this.running = false;
   }
@@ -35,6 +39,7 @@ export class Engine {
     const pr = window.devicePixelRatio || 1;
     this.renderer.setPixelRatio(q === 'low' ? Math.min(pr, 1) : q === 'medium' ? Math.min(pr, 1.5) : Math.min(pr, 2));
     this.renderer.shadowMap.enabled = q !== 'low';
+    this.maxMapLights = q === 'low' ? 4 : q === 'medium' ? 6 : 8;
     if (this.sun) { this.sun.castShadow = q !== 'low'; this.sun.shadow.mapSize.setScalar(q === 'high' ? 2048 : 1024); if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; } }
     this.scene.traverse((o) => { if (o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; });
   }
@@ -46,7 +51,7 @@ export class Engine {
   setEnvironment(env) {
     const s = this.scene;
     // clear old lights
-    for (const o of [...s.children]) if (o.isLight || o.userData.env) s.remove(o);
+    for (const o of [...s.children]) if ((o.isLight || o.userData.env) && !o.userData.keep) s.remove(o);
     s.background = skyGradient(env.skyTop, env.skyHorizon, env.skyBottom);
     s.fog = new THREE.Fog(new THREE.Color(env.fogColor), env.fogNear, env.fogFar);
     const hemi = new THREE.HemisphereLight(new THREE.Color(env.hemiSky), new THREE.Color(env.hemiGround), env.hemiIntensity ?? 0.9);
@@ -63,6 +68,23 @@ export class Engine {
     const amb = new THREE.AmbientLight(new THREE.Color(env.ambient || '#404048'), env.ambientIntensity ?? 0.25); amb.userData.env = true; s.add(amb);
     this.vmHemi.color.set(env.hemiSky); this.vmHemi.groundColor.set(env.hemiGround); this.vmHemi.intensity = (env.hemiIntensity ?? 0.9) * 1.1 + 0.3;
     this.vmSun.color.set(env.sunColor); this.vmSun.intensity = Math.min(2.5, (env.sunIntensity ?? 2) * 0.8 + 0.4); this.vmSunDir = new THREE.Vector3(env.sunDir[0], env.sunDir[1], env.sunDir[2]).normalize();
+  }
+  setMapLights(defs) { this.mapLightDefs = defs || []; for (const slot of this.mapPool) { slot.def = null; slot.target = 0; slot.cur = 0; slot.l.intensity = 0; slot.l.position.set(0, -200, 0); } this.mapLightT = 0; }
+  updateMapLights(dt, focus) {
+    const defs = this.mapLightDefs; if (!defs.length) return;
+    this.mapLightT -= dt;
+    if (this.mapLightT <= 0) {
+      this.mapLightT = 0.3;
+      const n = Math.min(this.maxMapLights, this.mapPool.length);
+      const ranked = defs.map((d) => ({ d, dist: Math.hypot(d.x - focus.x, d.y - focus.y, d.z - focus.z) - d.dist * 0.5 })).sort((a, b) => a.dist - b.dist).slice(0, n).map((r) => r.d);
+      for (const slot of this.mapPool) if (slot.def && !ranked.includes(slot.def)) slot.target = 0; // fade out, free when dark
+      for (const d of ranked) {
+        if (this.mapPool.some((sl) => sl.def === d)) { const sl = this.mapPool.find((x) => x.def === d); sl.target = d.intensity; continue; }
+        const free = this.mapPool.find((sl) => !sl.def || (sl.target === 0 && sl.cur < 0.05)); if (!free) continue;
+        free.def = d; free.l.position.set(d.x, d.y, d.z); free.l.color.set(d.color); free.l.distance = d.dist; free.cur = 0; free.target = d.intensity;
+      }
+    }
+    for (const slot of this.mapPool) { if (!slot.def) continue; slot.cur += (slot.target - slot.cur) * Math.min(1, dt * 6); slot.l.intensity = slot.cur; if (slot.target === 0 && slot.cur < 0.03) { slot.def = null; slot.cur = 0; slot.l.intensity = 0; slot.l.position.set(0, -200, 0); } }
   }
   // keep the shadow frustum centered on the camera target
   updateSunTarget(p) { if (!this.sun) return; const o = this.sun.position.clone().normalize(); this.sun.position.copy(p).addScaledVector(o, 120); this.sun.target.position.copy(p); this.sun.target.updateMatrixWorld(); }
@@ -82,6 +104,7 @@ export class Engine {
     const dt = Math.min(0.05, this.clock.getDelta());
     this.fx.update(dt, this.camera);
     if (this.onFrame) this.onFrame(dt);
+    this.updateMapLights(dt, this.camera.position);
     this._resize2();
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
@@ -127,7 +150,7 @@ class FX {
     // Fixed pool of dynamic lights. Adding/removing lights forces three.js to recompile every shader, so the
     // pool lives in the scene permanently and we only change intensity/position.
     this.lightPool = [];
-    for (let i = 0; i < 6; i++) { const l = new THREE.PointLight(0xffffff, 0, 10, 2); l.position.set(0, -100, 0); this.group.add(l); this.lightPool.push({ l, life: 0, maxLife: 1, decay: true }); }
+    for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xffffff, 0, 10, 2); l.position.set(0, -100, 0); this.group.add(l); this.lightPool.push({ l, life: 0, maxLife: 1, decay: true }); }
     this.spot = new THREE.SpotLight(0xffffff, 0, 80, 0.4, 0.5, 1.2); this.spot.position.set(0, -100, 0); this.group.add(this.spot); this.group.add(this.spot.target);
   }
   /** Borrow a pooled light. Returns the slot so callers can move it. */

@@ -18,6 +18,11 @@ export function mat(name, params = {}, extra = {}) {
 }
 const col = (c, r = 0.85, mt = 0.05) => mat('color', { color: c, rough: r, metal: mt });
 
+/** Scale UVs of a BoxGeometry uniformly (tiling a shared material instead of cloning it with a different repeat). */
+function scaleBoxUVs(geo, sx, sy) { const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * sx, uv.getY(i) * sy); uv.needsUpdate = true; }
+/** Per-face UV scale for BoxGeometry: faces are +x, -x, +y, -y, +z, -z with 4 vertices each. null leaves a face as is. */
+function scaleBoxFaceUVs(geo, ...faces) { const uv = geo.attributes.uv; faces.forEach((f, fi) => { if (!f) return; for (let i = fi * 4; i < fi * 4 + 4; i++) uv.setXY(i, uv.getX(i) * f[0], uv.getY(i) * f[1]); }); uv.needsUpdate = true; }
+
 export class MapBuilder {
   constructor(def) {
     this.def = def;
@@ -114,11 +119,12 @@ export class MapBuilder {
     const palette = { brick: ['#8a3b2a', '#7a4a3a', '#9c4b32', '#6b3a2c', '#a85a3c'], concrete: ['#8d8d86', '#7b7f82', '#a39f94', '#6f7274'], plaster: ['#d9c9a3', '#c9a86a', '#b8c4b0', '#e0b07a', '#9fb3c8', '#d98a6a'], glass: ['#2d4a66', '#3b5b73'], tenement: ['#6b4a3a', '#5c4033', '#7d5a46'], shanty: ['#8a8f93', '#a3714a', '#6f8a5f', '#b06a4a'] };
     const wall = color || rng.pick(palette[style] || palette.concrete);
     const fstyle = style === 'brick' || style === 'tenement' ? 'brick' : style === 'glass' ? 'glass' : 'plain';
-    const facade = tex('facade', { seed: rng.int(1, 9999), wall, style: fstyle, cols: 3, rows: 2, lit, winColor, balcony: balcony || style === 'tenement', shutters, ac: style !== 'glass' });
-    const mk = (fw) => { const m = new THREE.MeshStandardMaterial({ map: facade.clone(), roughness: style === 'glass' ? 0.35 : 0.9, metalness: style === 'glass' ? 0.3 : 0.02 }); m.map.repeat.set(Math.max(1, Math.round(fw / 9)), Math.max(1, floors / 2)); m.map.needsUpdate = true; return m; };
+    // facade materials are shared across buildings (a handful of seeds per look) so merged geometry batches well
+    const fm = mat('facade', { seed: 1 + (rng.int(1, 9999) % 5), wall, style: fstyle, cols: 3, rows: 2, lit, winColor, balcony: balcony || style === 'tenement', shutters, ac: style !== 'glass' }, { roughness: style === 'glass' ? 0.35 : 0.9, metalness: style === 'glass' ? 0.3 : 0.02 });
     const roofMat = mat('concrete', { color: '#55544f', seed: 21 });
-    const mats = [mk(d), mk(d), roofMat, roofMat, mk(w), mk(w)];
+    const mats = [fm, fm, roofMat, roofMat, fm, fm];
     const geo = new THREE.BoxGeometry(w, h, d);
+    const ry = Math.max(1, floors / 2); scaleBoxFaceUVs(geo, [Math.max(1, Math.round(d / 9)), ry], [Math.max(1, Math.round(d / 9)), ry], null, null, [Math.max(1, Math.round(w / 9)), ry], [Math.max(1, Math.round(w / 9)), ry]);
     const mesh = this._mesh(geo, mats, x, h / 2, z, rot);
     this._collide(x, 0, z, w, h, d, rot, { kind: 'building' });
     this.footprints.push({ x, z, w, d, rot, h });
@@ -260,9 +266,10 @@ export class MapBuilder {
     const P = PROPS[type]; if (!P) { console.warn('unknown prop', type); return; }
     P.call(this, x, z, rot, o, rng);
   }
+  /** Registers a point light definition. The engine streams the nearest few through a fixed pool, so maps can define many. */
   light(x, y, z, color = '#ffd9a0', intensity = 8, dist = 18) {
-    if (this.lights.length >= this.lightBudget) return;
-    const l = new THREE.PointLight(new THREE.Color(color), intensity, dist, 1.6); l.position.set(x, y, z); this.group.add(l); this.lights.push(l);
+    if (this.lights.length >= Math.max(this.lightBudget, 40)) return;
+    this.lights.push({ x, y, z, color, intensity, dist });
   }
   spawn(team, x, z, yaw = 0) { const s = { x, z, yaw }; if (team === 0 || team === 1) this.spawns[team].push(s); this.spawns.all.push(s); }
   cinematic(x, y, z, lookX, lookZ) { this.cinematicPoints.push({ x, y, z, lookX, lookZ }); }
@@ -300,7 +307,7 @@ export class MapBuilder {
     for (const t of [0, 1]) if (this.spawns[t].length === 0) this.spawns[t] = this.spawns.all.filter((s, i) => i % 2 === t);
     this._mergeStatic();
     this.group.traverse((o) => { if (o.isMesh) o.matrixAutoUpdate = false; o.updateMatrix(); });
-    return { def: this.def, group: this.group, world: this.world, nav, spawns: this.spawns, size: this.size, minimap: this._minimap(nav), landmarks: this.landmarks, cinematicPoints: this.cinematicPoints };
+    return { def: this.def, group: this.group, world: this.world, nav, spawns: this.spawns, size: this.size, minimap: this._minimap(nav), landmarks: this.landmarks, cinematicPoints: this.cinematicPoints, lights: this.lights };
   }
   /** Merge every single-material static mesh into one mesh per material: cuts draw calls ~10x. */
   _mergeStatic() {
@@ -309,7 +316,8 @@ export class MapBuilder {
     this.group.traverse((o) => {
       if (!o.isMesh || Array.isArray(o.material) || o.isPoints || o.isSprite || o.isLine) return;
       const g = o.geometry; if (!g.attributes.position || !g.attributes.normal || !g.attributes.uv) return;
-      const key = o.material.uuid + (o.castShadow ? 'c' : 'n');
+      const m = o.material;
+      const key = [m.type, m.color?.getHex(), m.roughness, m.metalness, m.map?.uuid || '', m.transparent, m.opacity, m.side, m.emissive?.getHex(), m.emissiveIntensity, m.emissiveMap?.uuid || '', m.depthWrite, m.polygonOffset, m.polygonOffsetFactor, m.blending, o.castShadow ? 'c' : 'n'].join('|');
       if (!buckets.has(key)) buckets.set(key, { material: o.material, cast: o.castShadow, geos: [] });
       const gg = g.clone(); gg.applyMatrix4(o.matrixWorld); if (gg.index === null) gg.setIndex([...Array(gg.attributes.position.count).keys()]);
       for (const name of Object.keys(gg.attributes)) if (!['position', 'normal', 'uv'].includes(name)) gg.deleteAttribute(name);

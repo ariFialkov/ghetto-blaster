@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { sfx } from '../audio/sfx.js';
 import { NameTags } from './nametags.js';
+import { streakIcon } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -16,7 +17,8 @@ export class HUD {
   }
   bind(match, { onOpenLoadout, onScoreboard, onPause }) {
     this.m = match; const p = match.player;
-    match.events.kill = ({ part }) => { this.hitmark(true); sfx('hit', { kill: true }); };
+    match.events.kill = ({ victim, part }) => { this.hitmark(true); sfx('hit', { kill: true }); this.notify(part === 'head' ? `HEADSHOT ${victim.name}` : `KILLED ${victim.name}`, 100 + (part === 'head' ? 25 : 0), part === 'head' ? 'head' : 'kill'); };
+    match.events.assist = ({ victim }) => { this.notify(`ASSIST ${victim.name}`, 25, 'assist'); };
     match.events.death = ({ killer, weaponName }) => { this.message(killer ? `KILLED BY ${killer.name.toUpperCase()}` : 'YOU DIED', 2.5); this.dmgA = 1; };
     match.events.message = ({ text, dur }) => this.message(text, dur);
     match.events.streak = ({ def }) => { this.streakMsg(def.name); };
@@ -33,6 +35,11 @@ export class HUD {
     this.textT = 0; this.lastFeedKey = '';
     $('hud-name').textContent = '';
   }
+  notify(text, score, kind = 'kill') {
+    const box = $('kill-notify'); const d = document.createElement('div'); d.className = 'kn ' + kind; d.innerHTML = `<div class="kn-t">${text}</div><div class="kn-s">+${score}</div>`; box.prepend(d);
+    while (box.children.length > 3) box.removeChild(box.lastChild);
+    setTimeout(() => d.classList.add('out'), 1400); setTimeout(() => d.remove(), 1800);
+  }
   hitmark(kill, head) { const h = $('hitmarker'); h.classList.remove('fade'); h.classList.toggle('kill', !!kill); h.classList.add('show'); h.style.transform = `translate(-50%,-50%) rotate(45deg) scale(${kill ? 1.4 : head ? 1.15 : 1})`; this.hitT = 0.12; }
   message(text, dur = 1.5) { const e = $('hud-msg'); e.textContent = text; e.classList.add('show'); this.msgT = dur; }
   streakMsg(text) { const e = $('hud-streak-msg'); e.textContent = text + ' READY'; e.classList.add('show'); this.streakMsgT = 2.2; }
@@ -40,7 +47,7 @@ export class HUD {
     const bar = $('streaks-bar'); const st = this.m.streakState; const p = this.m.player;
     if (rebuild || bar.children.length !== 3) {
       bar.innerHTML = '';
-      st.picks.forEach((def, i) => { const d = document.createElement('div'); d.className = 'sk'; d.innerHTML = `<div class="fill"></div><span class="key">${this.m.input.mobile ? '' : i + 3}</span><span class="nm">${def ? def.name : '-'}</span><span class="cost">${def ? def.cost : ''}</span>`; d.onclick = () => this.m.useStreak(p, i); bar.appendChild(d); });
+      st.picks.forEach((def, i) => { const d = document.createElement('div'); d.className = 'sk'; d.innerHTML = `<div class="fill"></div><span class="key">${this.m.input.mobile ? '' : i + 3}</span>${def ? `<img class="sk-ico" src="${streakIcon(def.effect, '#ffffff', 64)}" alt="">` : '<span class="nm">-</span>'}<span class="cost">${def ? def.cost : ''}</span>`; if (def) d.title = def.name; d.onclick = () => this.m.useStreak(p, i); bar.appendChild(d); });
       this.readyFlags = [false, false, false];
     }
     st.picks.forEach((def, i) => { const d = bar.children[i]; if (!def) return; const ready = !st.used[i] && p.streakScore >= def.cost; const k = st.used[i] ? 0 : Math.min(1, p.streakScore / def.cost); d.querySelector('.fill').style.height = `${k * 100}%`; d.classList.toggle('ready', ready); d.style.opacity = st.used[i] ? 0.35 : 1; if (ready && !this.readyFlags[i]) { this.readyFlags[i] = true; this.streakMsg(def.name); sfx('ui'); } });

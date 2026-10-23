@@ -5,6 +5,12 @@ import { TACTICALS, LETHALS } from '../game/equipment.js';
 import { streaksForMap } from '../game/streaks.js';
 import { MODES } from '../game/modes.js';
 import { sfx } from '../audio/sfx.js';
+import { weaponIcon, equipmentIcon, streakIcon } from './icons.js';
+
+let engineRef = null;
+export function setEngine(e) { engineRef = e; }
+const wIcon = (w) => engineRef ? weaponIcon(engineRef, w) : '';
+const eIcon = (e) => engineRef ? equipmentIcon(engineRef, e) : '';
 
 const $ = (id) => document.getElementById(id);
 const show = (id) => $(id).classList.remove('hidden');
@@ -51,6 +57,7 @@ export function lobbySlots(mode, players, total) {
 }
 
 // ---------------- loadout selector (pre-game) ----------------
+const TIER_COLORS = { starter: '#7cd3ff', medium: '#ffd166', powerful: '#ff7a1a' };
 export function showLoadoutSelector(mapId, current, onPick, onReady) {
   show('screen-loadout');
   const list = $('loadout-list'); const detail = $('loadout-detail'); const sp = $('streak-pick');
@@ -61,23 +68,26 @@ export function showLoadoutSelector(mapId, current, onPick, onReady) {
     list.innerHTML = '';
     for (const lo of allLoadouts()) {
       const d = document.createElement('div'); d.className = `lo-item ${lo.custom ? 'custom' : ''} ${lo.empty ? 'empty' : ''} ${lo.id === sel ? 'on' : ''}`;
-      d.innerHTML = `<div class="lo-name">${lo.name}</div><div class="lo-sub">${lo.empty ? 'not configured' : `${WEAPONS[lo.primary]?.name || ''} · ${WEAPONS[lo.secondary]?.name || ''}`}</div>`;
+      const r = lo.empty ? null : resolveLoadout(lo);
+      d.innerHTML = `${r ? `<img class="lo-ico" src="${wIcon(r.primary)}" alt="">` : '<div class="lo-ico lo-ico-empty">+</div>'}<div><div class="lo-name">${lo.name}</div><div class="lo-sub">${lo.empty ? 'not configured' : `${r.primary.name} · ${r.secondary.name}`}</div></div>`;
       if (!lo.empty) d.onclick = () => { sel = lo.id; sfx('click'); render(); emit(); };
       list.appendChild(d);
     }
     const lo = allLoadouts().find((l) => l.id === sel) || STOCK_LOADOUTS[0]; const r = resolveLoadout(lo);
     const bar = (label, v) => `<div class="stat-bar"><span>${label}</span><div><i style="width:${Math.round(v * 100)}%"></i></div></div>`;
-    const st = weaponStats(r.primary);
-    detail.innerHTML = `<h3>${lo.name}</h3><div class="desc">${lo.desc || 'Custom loadout.'}</div>
-      <div class="slot-row"><span class="slot-k">PRIMARY</span><span class="slot-v">${r.primary.name}<small>${r.primary.desc}</small></span></div>
-      <div class="slot-row"><span class="slot-k">SECONDARY</span><span class="slot-v">${r.secondary.name}<small>${r.secondary.desc}</small></span></div>
-      <div class="slot-row"><span class="slot-k">TACTICAL</span><span class="slot-v">${r.tactical.name}<small>${r.tactical.desc}</small></span></div>
-      <div class="slot-row"><span class="slot-k">LETHAL</span><span class="slot-v">${r.lethal.name}<small>${r.lethal.desc}</small></span></div>
-      <div class="stat-bars">${bar('DAMAGE', st.damage)}${bar('FIRE RATE', st.rate)}${bar('RANGE', st.range)}${bar('ACCURACY', st.accuracy)}${bar('MOBILITY', st.mobility)}</div>`;
+    const st = weaponStats(r.primary), st2 = weaponStats(r.secondary);
+    detail.innerHTML = `<div class="lo-head-row"><h3>${lo.name}</h3><div class="desc">${lo.desc || 'Custom loadout.'}</div></div>
+      <div class="lo-cards">
+        <div class="lo-card primary"><span class="lo-k">PRIMARY</span><img src="${wIcon(r.primary)}" alt=""><div class="lo-card-name">${r.primary.name}</div><div class="lo-card-type">${r.primary.type.toUpperCase()} · ${r.primary.mag} RND</div><div class="stat-bars">${bar('DMG', st.damage)}${bar('RATE', st.rate)}${bar('RANGE', st.range)}${bar('ACC', st.accuracy)}${bar('MOB', st.mobility)}</div></div>
+        <div class="lo-card secondary"><span class="lo-k">SECONDARY</span><img src="${wIcon(r.secondary)}" alt=""><div class="lo-card-name">${r.secondary.name}</div><div class="lo-card-type">${r.secondary.type.toUpperCase()} · ${r.secondary.mag} RND</div><div class="stat-bars small">${bar('DMG', st2.damage)}${bar('RATE', st2.rate)}${bar('RANGE', st2.range)}</div></div>
+        <div class="lo-card eq"><span class="lo-k">TACTICAL</span><img src="${eIcon(r.tactical)}" alt=""><div class="lo-card-name">${r.tactical.name}</div><div class="lo-card-type">${r.tactical.passive ? 'PASSIVE' : 'x' + r.tactical.count}</div><div class="lo-card-desc">${r.tactical.desc}</div></div>
+        <div class="lo-card eq"><span class="lo-k">LETHAL</span><img src="${eIcon(r.lethal)}" alt=""><div class="lo-card-name">${r.lethal.name}</div><div class="lo-card-type">x${r.lethal.count}</div><div class="lo-card-desc">${r.lethal.desc}</div></div>
+      </div>`;
     sp.innerHTML = '';
-    [['STARTER', streaks.starter, 0], ['MEDIUM', streaks.medium, 1], ['POWERFUL', streaks.powerful, 2]].forEach(([title, arr, i]) => {
-      const t = document.createElement('div'); t.className = 'streak-tier'; t.innerHTML = `<h4>${title} STREAK</h4>`;
-      for (const s of arr) { const o = document.createElement('div'); o.className = `streak-opt ${picks[i] === s.id ? 'on' : ''}`; o.title = s.desc; o.innerHTML = `<span>${s.name}</span><span class="cost">${s.cost}</span>`; o.onclick = () => { picks[i] = s.id; sfx('click'); render(); emit(); }; t.appendChild(o); }
+    [['STARTER', streaks.starter, 0, 'starter'], ['MEDIUM', streaks.medium, 1, 'medium'], ['POWERFUL', streaks.powerful, 2, 'powerful']].forEach(([title, arr, i, tier]) => {
+      const t = document.createElement('div'); t.className = 'streak-tier'; t.innerHTML = `<h4>${title}</h4><div class="st-row"></div>`; const row = t.querySelector('.st-row');
+      for (const s of arr) { const o = document.createElement('div'); o.className = `st-tile ${picks[i] === s.id ? 'on' : ''}`; o.title = s.desc; o.innerHTML = `<img src="${streakIcon(s.effect, picks[i] === s.id ? TIER_COLORS[tier] : '#d8d8e0')}" alt=""><span class="st-name">${s.name}</span><b class="st-cost">${s.cost}</b>`; o.onclick = () => { picks[i] = s.id; sfx('click'); render(); emit(); }; row.appendChild(o); }
+      const cur = arr.find((x) => x.id === picks[i]); const dd = document.createElement('div'); dd.className = 'st-desc'; dd.textContent = cur ? `${cur.name} — ${cur.desc}` : ''; t.appendChild(dd);
       sp.appendChild(t);
     });
   };
@@ -118,10 +128,10 @@ export function showResults(result, match, payout, wallet, onAgain, onMenu) {
 export function closeDialog() { hide('screen-dialog'); }
 export function openDialog(title, bodyHtml, onClose) { show('screen-dialog'); $('dialog-title').textContent = title; $('dialog-body').innerHTML = bodyHtml; $('dialog-close').onclick = () => { sfx('click'); closeDialog(); onClose && onClose(); }; }
 
-export function openControls(mobile) {
+export function openControls(mobile, onClose) {
   const rows = mobile ? [['Move', 'Left joystick (push to the edge to sprint)'], ['Look', 'Drag anywhere on the right half'], ['Fire', 'Red button (drag it to aim while firing)'], ['ADS', 'ADS button (toggle)'], ['Jump / Duck / Peek', 'Buttons above fire'], ['Swap / Reload', 'Small buttons'], ['Lethal / Tactical', 'LETHAL and TAC buttons'], ['Score streaks', 'Tap the streak icons bottom-left'], ['Scoreboard', 'SCORE button at the top']]
     : [['Move', '<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>'], ['Look / Fire / ADS', 'Mouse · <kbd>LMB</kbd> · <kbd>RMB</kbd>'], ['Sprint', '<kbd>SHIFT</kbd>'], ['Jump', '<kbd>SPACE</kbd>'], ['Duck', '<kbd>C</kbd> or <kbd>CTRL</kbd>'], ['Peek left / right', '<kbd>Q</kbd> / <kbd>E</kbd>'], ['Switch weapon', '<kbd>1</kbd> <kbd>2</kbd> or scroll / <kbd>V</kbd>'], ['Reload', '<kbd>R</kbd>'], ['Lethal / Tactical', '<kbd>G</kbd> / <kbd>F</kbd>'], ['Score streaks', '<kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd>'], ['Scoreboard', 'hold <kbd>TAB</kbd>'], ['Loadout (pre-game)', '<kbd>L</kbd>'], ['Pause / release mouse', '<kbd>ESC</kbd>']];
-  openDialog('CONTROLS', `<table class="controls-table">${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>`);
+  openDialog('CONTROLS', `<table class="controls-table">${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>`, onClose);
 }
 export function openSettings(settings, apply) {
   const s = settings;
@@ -156,9 +166,14 @@ export function openLoadoutEditor() {
         <div class="slot-row"><span class="slot-k">SECONDARY</span><select id="ed-secondary">${opts(SECONDARIES, c.secondary)}</select></div>
         <div class="slot-row"><span class="slot-k">TACTICAL</span><select id="ed-tactical">${opts(Object.values(TACTICALS), c.tactical)}</select></div>
         <div class="slot-row"><span class="slot-k">LETHAL</span><select id="ed-lethal">${opts(Object.values(LETHALS), c.lethal)}</select></div>
+        <div class="ed-preview"><img id="ed-pv-primary" src="${wIcon(WEAPONS[c.primary])}" alt=""><img id="ed-pv-secondary" src="${wIcon(WEAPONS[c.secondary])}" alt=""><img id="ed-pv-tactical" class="sm" src="${eIcon(TACTICALS[c.tactical])}" alt=""><img id="ed-pv-lethal" class="sm" src="${eIcon(LETHALS[c.lethal])}" alt=""></div>
         <div class="ed-actions"><button class="big-btn" id="ed-save" style="padding:10px 24px;font-size:18px">SAVE</button><button class="pill" id="ed-clear">CLEAR</button></div></div></div>`;
     const b = $('dialog-body');
     b.querySelectorAll('.ed-list .lo-item').forEach((d) => { d.onclick = () => { slot = +d.dataset.i; sfx('click'); render(); }; });
+    b.querySelector('#ed-primary').onchange = (e) => { b.querySelector('#ed-pv-primary').src = wIcon(WEAPONS[e.target.value]); };
+    b.querySelector('#ed-secondary').onchange = (e) => { b.querySelector('#ed-pv-secondary').src = wIcon(WEAPONS[e.target.value]); };
+    b.querySelector('#ed-tactical').onchange = (e) => { b.querySelector('#ed-pv-tactical').src = eIcon(TACTICALS[e.target.value]); };
+    b.querySelector('#ed-lethal').onchange = (e) => { b.querySelector('#ed-pv-lethal').src = eIcon(LETHALS[e.target.value]); };
     b.querySelector('#ed-save').onclick = () => { save.custom[slot] = { name: (b.querySelector('#ed-name').value.trim() || `CUSTOM ${slot + 1}`).toUpperCase().slice(0, 14), primary: b.querySelector('#ed-primary').value, secondary: b.querySelector('#ed-secondary').value, tactical: b.querySelector('#ed-tactical').value, lethal: b.querySelector('#ed-lethal').value, desc: 'Custom loadout.' }; persist(); sfx('ui'); render(); };
     b.querySelector('#ed-clear').onclick = () => { save.custom[slot] = null; persist(); sfx('click'); render(); };
   };

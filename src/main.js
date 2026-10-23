@@ -18,6 +18,7 @@ const canvas = $('gl');
 const engine = new Engine(canvas);
 const input = new Input(canvas);
 const hud = new HUD();
+UI.setEngine(engine);
 const save = getSave();
 let settings = save.settings;
 const params = new URLSearchParams(location.search);
@@ -55,7 +56,7 @@ async function enterTitle(mapId = null) {
   const rng = new RNG(Date.now() & 0xffff);
   app.mapId = FORCE_MAP || mapId || rng.pick(MAPS).id;
   app.mapData = await getMap(app.mapId);
-  engine.setEnvironment(app.mapData.def.env);
+  engine.setEnvironment(app.mapData.def.env); engine.setMapLights(app.mapData.lights);
   app.match = new Match({ engine, input, map: app.mapData, mode: MODES.tdm, settings, seed: rng.int(1, 1e9), loadout: null, mapId: app.mapId, cinematic: true });
   app.match.goLive();
   engine.warmup();
@@ -109,7 +110,7 @@ async function enterLobby(mode) {
   const mapData = await getMap(mapId);
   const loadout = allLoadouts().find((l) => l.id === (save.lastLoadout || 'runner') && !l.empty) || allLoadouts()[0];
   app.pick = { loadoutId: loadout.id, streaks: null };
-  engine.setEnvironment(def.env);
+  engine.setEnvironment(def.env); engine.setMapLights(mapData.lights);
   clearSceneMatch();
   const name = (settings.name || 'YOU').toUpperCase();
   const modeDef = DEBUG_TIME ? { ...mode, timeLimit: DEBUG_TIME } : mode;
@@ -154,10 +155,15 @@ function pauseMatch() {
   if (app.state !== 'match' || !app.match || app.match.state === 'ended') return;
   if (!$('screen-dialog').classList.contains('hidden')) return;
   input.setEnabled(false);
-  UI.openDialog('PAUSED', `<div style="display:flex;gap:12px;flex-wrap:wrap"><button class="big-btn" id="p-resume">RESUME</button><button class="pill" id="p-settings">SETTINGS</button><button class="pill" id="p-quit">QUIT MATCH</button></div>`, () => { input.setEnabled(true); if (!input.mobile) input.requestLock(); });
-  $('p-resume').onclick = () => { UI.closeDialog(); input.setEnabled(true); if (!input.mobile) input.requestLock(); };
-  $('p-settings').onclick = () => { UI.openSettings(settings, applySettings); $('dialog-close').onclick = () => { UI.closeDialog(); input.setEnabled(true); if (!input.mobile) input.requestLock(); }; };
-  $('p-quit').onclick = () => { UI.closeDialog(); quitMatch(); };
+  const resume = () => { UI.closeDialog(); input.setEnabled(true); if (!input.mobile) input.requestLock(); };
+  const openPause = () => {
+    UI.openDialog('PAUSED', `<div class="pause-menu"><button class="menu-btn primary" id="p-resume">RESUME</button><button class="menu-btn" id="p-controls">CONTROLS</button><button class="menu-btn" id="p-settings">SETTINGS</button><button class="menu-btn danger" id="p-quit">QUIT MATCH</button></div>`, resume);
+    $('p-resume').onclick = resume;
+    $('p-controls').onclick = () => { sfx('click'); UI.openControls(input.mobile, openPause); };
+    $('p-settings').onclick = () => { sfx('click'); UI.openSettings(settings, (s2) => { applySettings(s2); }); $('dialog-close').onclick = () => { sfx('click'); applySettings(settings); openPause(); }; };
+    $('p-quit').onclick = () => { UI.closeDialog(); quitMatch(); };
+  };
+  openPause();
 }
 function quitMatch() { document.removeEventListener('pointerlockchange', onLockChange); UI.hideScoreboard(); hud.hide(); input.setEnabled(false); enterTitle(app.mapId); }
 function endMatch(res) {

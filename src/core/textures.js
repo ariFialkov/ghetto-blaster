@@ -30,10 +30,13 @@ function grime(ctx, w, h, rng, n = 12) {
   }
 }
 
+// Random seeds are quantised to a few variants per texture type so that props share materials and batch into few draw calls.
+const SEED_VARIANTS = { brick: 4, concrete: 4, plaster: 4, asphalt: 2, sidewalk: 2, dirt: 2, grass: 2, cobble: 2, tile: 3, metal: 3, corrugated: 4, facade: 4, graffiti: 3, cloth: 3, water: 1 };
 export function tex(name, params = {}) {
+  if (params.seed !== undefined && SEED_VARIANTS[name]) params = { ...params, seed: ((Math.abs(Math.floor(params.seed)) - 1) % SEED_VARIANTS[name]) + 1 };
   const key = name + JSON.stringify(params);
   if (cache.has(key)) return cache.get(key);
-  const t = GEN[name](params);
+  const t = GEN[name](params); t.name = name;
   cache.set(key, t);
   return t;
 }

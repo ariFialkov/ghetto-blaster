@@ -110,7 +110,7 @@ export class Match {
       credit.addScore(100 + (part === 'head' ? 25 : 0), 'kill');
       if (this.mode.teams && credit.team !== null) this.teamScore[credit.team]++;
       // assists
-      for (const [a, dmg] of victim.damageTakenFrom) if (a !== credit && a.alive !== undefined && dmg >= 25 && !this.sameTeam(a, victim)) { a.assists++; a.addScore(50, 'assist'); }
+      for (const [a, dmg] of victim.damageTakenFrom) if (a !== credit && a.alive !== undefined && dmg >= 20 && !this.sameTeam(a, victim)) { a.assists++; a.addScore(25, 'assist'); if (a.isPlayer) this.emit('assist', { victim }); }
       if (this.mode.id === 'gungame' && !killer?.owner) { credit.gunGameIndex++; if (credit.gunGameIndex < this.mode.gunCount) { credit.setSingleWeapon(WEAPONS[GUN_GAME_ORDER[credit.gunGameIndex]]); if (credit.isPlayer) this.message(`NEXT GUN: ${WEAPONS[GUN_GAME_ORDER[credit.gunGameIndex]].name}`, 1.4); } }
       if (credit.isPlayer) { this.emit('kill', { victim, part }); if (credit.killStreak === 3) this.message('TRIPLE KILL', 1.5); else if (credit.killStreak === 5) this.message('ON A RAMPAGE', 1.5); else if (credit.killStreak === 10) this.message('UNSTOPPABLE', 1.8); }
     }
