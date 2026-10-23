@@ -150,11 +150,16 @@ button { font-family: inherit; cursor: pointer; }
 .streak-opt .cost { margin-left: auto; color: var(--accent2); font-family: var(--font-head); }
 .streak-opt .sdesc { display: none; }
 .loadout-foot { padding: 10px 20px; border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: flex-end; }
-@media (max-width: 820px) {
-  .loadout-body { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+@media (max-width: 900px), (max-height: 520px) {
+  .loadout-body { grid-template-columns: 1fr 1.6fr; grid-template-rows: 1fr; }
   .loadout-detail { display: none; }
-  .loadout-panel { height: 96vh; }
-  .loadout-foot .big-btn { padding: 10px 30px; font-size: 20px; }
+  .loadout-panel { height: 96vh; width: 98vw; }
+  .loadout-head { padding: 6px 14px; } .loadout-head h2 { font-size: 16px; } .loadout-timer { font-size: 15px; }
+  .loadout-foot { padding: 6px 14px; } .loadout-foot .big-btn { padding: 8px 26px; font-size: 18px; }
+  .lo-item { padding: 5px 8px; margin-bottom: 4px; } .lo-ico { width: 56px; height: 26px; } .lo-item .lo-name { font-size: 12px; } .lo-item .lo-sub { font-size: 10px; }
+  .streak-pick h4 { margin: 0 0 4px; font-size: 10px; } .streak-tier { margin-bottom: 6px; }
+  .st-tile { padding: 4px 2px 3px; } .st-tile img { width: 26px; height: 26px; } .st-tile .st-name { font-size: 7.5px; min-height: 14px; } .st-tile .st-cost { font-size: 10px; }
+  .st-desc { font-size: 10px; min-height: 0; margin-top: 2px; }
 }
 
 /* ---------- HUD ---------- */
