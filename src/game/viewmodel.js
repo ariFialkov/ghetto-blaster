@@ -183,13 +183,15 @@ export class ViewModel {
     // base poses
     const sightY = fit ? fit.sight : d.pistol ? h2(d) * 0.6 + 0.015 : (d.scope ? h2(d) + 0.035 + d.scope * 0 : h2(d) + 0.015);
     const hipPos = fit && d.pistol ? new THREE.Vector3(0.15, -0.17, -0.34) : new THREE.Vector3(0.17, -0.19 - (d.pistol ? 0.02 : 0), -0.36 - (d.pistol ? 0 : 0.05));
+    // narrower views (split screen halves) bring the gun in so it sits in the same place on screen as on a wide one
+    const xk = Math.min(1, Math.max(0.5, (this.camera.aspect || 1.78) / 1.78)); hipPos.x *= xk;
     const adsZ = -0.28 - (d.pistol ? 0 : 0.08);
     const fitY = this._adsY(adsZ);
     const adsPos = new THREE.Vector3(0, fitY !== null ? Math.min(-sightY, fitY) : -sightY, adsZ);
     const pos = hipPos.lerp(adsPos, ads);
     const rot = new THREE.Vector3(0, 0, 0);
     // sprint: lower and angle the gun
-    pos.lerp(new THREE.Vector3(0.2, -0.21, -0.34), spr); rot.x -= spr * 0.3; rot.y += spr * 0.55; rot.z += spr * 0.2;
+    pos.lerp(new THREE.Vector3(0.2 * xk, -0.21, -0.34), spr); rot.x -= spr * 0.3; rot.y += spr * 0.55; rot.z += spr * 0.2;
     // reload: roll the gun to present the magazine well; beats (mag out, mag in, charge) land as impulses
     const rt = st.reloadTime || 2, rk = st.reloading ? clamp(st.reloadT / rt, 0, 1) : this.lastRlK;
     if (st.reloading) this.rlEnv = env(rk, 0, 0.12, 0.86, 1);

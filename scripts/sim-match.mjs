@@ -15,7 +15,9 @@ const { resolveLoadout, STOCK_LOADOUTS } = await import('../src/game/loadouts.js
 const { loadMap } = await import('../src/maps/index.js');
 const { findStreak, streaksForMap } = await import('../src/game/streaks.js');
 
-const modeId = process.argv[2] || 'tdm', seeds = +(process.argv[3] || 5), mapArg = process.argv[4] || null;
+// --split: two human players (split screen), both driven by bot brains; the bet result is the better of the two
+const SPLIT = process.argv.includes('--split'), argv = process.argv.filter((a) => a !== '--split');
+const modeId = argv[2] || 'tdm', seeds = +(argv[3] || 5), mapArg = argv[4] || null;
 const mapIds = mapArg ? [mapArg] : ['skidrow', 'projects', 'tenements', 'ward', 'barrio', 'kowloon', 'banlieue'];
 const fxStub = { tracer: noop, impact: noop, muzzle: noop, explosion: noop, smoke: noop, sparkTrail: noop, blood: noop, casing: noop, inSmoke: () => false, clear: noop, update: noop, light: () => ({ life: 0, l: { intensity: 0 } }), spot: { intensity: 0, position: { copy: noop }, target: { position: { set: noop }, updateMatrixWorld: noop } } };
 const maps = new Map();
@@ -27,11 +29,14 @@ for (let s = 0; s < seeds; s++) {
   const engine = { scene, camera, fx: fxStub, updateSunTarget: noop, vmCamera: new THREE.PerspectiveCamera(), vmScene: new THREE.Scene() };
   const input = { poll: () => ({ move: { x: 0, y: 0 }, look: { dx: 0, dy: 0 }, fire: false, ads: false, sprint: false, peek: 0, pressed: new Set() }), mobile: false, crouchHold: false };
   const seed = 1000 + s * 7919;
-  const m = new Match({ engine, input, map, mode: MODES[modeId], settings: { fov: 75 }, seed, loadout: STOCK_LOADOUTS[s % 5], mapId, bet: 0, playerName: 'SIM' });
-  // drive the player with a strong bot brain (a "rampaging" player)
-  const p = m.player; for (const k of Object.getOwnPropertyNames(Bot.prototype)) if (!['constructor', 'update'].includes(k)) p[k] = Bot.prototype[k]; Bot.prototype.initBrain.call(p, { skill: 0.95, persona: 'rusher' }); p.reaction = 0.15; p.aggro = 1;
-  p.update = function (dt) { this.frozen = false; Bot.prototype.update.call(this, dt); };
-  p.computeAim = function () { this.aimPoint = this.pos.clone().addScaledVector(this.forward(new THREE.Vector3()), 10); return this.aimPoint; };
+  const m = new Match({ engine, input, map, mode: MODES[modeId], settings: { fov: 75 }, seed, loadout: STOCK_LOADOUTS[s % 5], mapId, bet: 0, playerName: 'SIM', split: SPLIT ? { input } : null });
+  // drive the player(s) with a strong bot brain (a "rampaging" player)
+  const p = m.player;
+  for (const h of m.players) {
+    for (const k of Object.getOwnPropertyNames(Bot.prototype)) if (!['constructor', 'update'].includes(k)) h[k] = Bot.prototype[k]; Bot.prototype.initBrain.call(h, { skill: 0.95, persona: 'rusher' }); h.reaction = 0.15; h.aggro = 1;
+    h.update = function (dt) { this.frozen = false; Bot.prototype.update.call(this, dt); };
+    h.computeAim = function () { this.aimPoint = this.pos.clone().addScaledVector(this.forward(new THREE.Vector3()), 10); return this.aimPoint; };
+  }
   const st = streaksForMap(mapId); m.streakState.picks = [st.starter[0], st.medium[0], st.powerful[0]];
   m.events.end = noop;
   const plan = m.director.plan; const planStr = modeId === 'tdm' ? `playerWins=${plan.playerWins} loserFinal=${plan.loserFinal}` : `placement=${plan.placement}/${plan.n} winner=${plan.winner.name}`;
@@ -41,7 +46,7 @@ for (let s = 0; s < seeds; s++) {
   const ok = modeId === 'tdm' ? (r.win === plan.playerWins && !r.draw) : (r.place === plan.placement);
   if (!ok) fails++;
   const rank = r.rank.map((a) => `${a.name}:${modeId === 'gungame' ? a.gunGameIndex : a.kills}/${a.deaths}`).slice(0, 6).join(' ');
-  console.log(`${ok ? 'OK  ' : 'FAIL'} seed=${seed} ${mapId.padEnd(9)} ${planStr.padEnd(38)} -> ${modeId === 'tdm' ? `score ${m.teamScore[p.team]}-${m.teamScore[1 - p.team]} (${r.win ? 'WIN' : r.draw ? 'DRAW' : 'LOSS'})` : `place ${r.place}`} | player K/D ${p.kills}/${p.deaths} | elapsed ${m.elapsed.toFixed(0)}s | streaks ${streakUses} | fate ${m.director.log.filter((l) => l.startsWith('fate')).length} rig ${m.director.log.filter((l) => l.startsWith('rig')).length} | ${(Date.now() - t0)}ms`);
+  console.log(`${ok ? 'OK  ' : 'FAIL'} seed=${seed} ${mapId.padEnd(9)} ${planStr.padEnd(38)} -> ${modeId === 'tdm' ? `score ${m.teamScore[p.team]}-${m.teamScore[1 - p.team]} (${r.win ? 'WIN' : r.draw ? 'DRAW' : 'LOSS'})` : `place ${r.place}${r.places && r.places.length > 1 ? ` (P1 #${r.places[0]}, P2 #${r.places[1]})` : ""}`} | player K/D ${p.kills}/${p.deaths} | elapsed ${m.elapsed.toFixed(0)}s | streaks ${streakUses} | fate ${m.director.log.filter((l) => l.startsWith('fate')).length} rig ${m.director.log.filter((l) => l.startsWith('rig')).length} | ${(Date.now() - t0)}ms`);
   if (!ok) console.log('   top:', rank);
 }
 console.log(fails ? `FAILURES: ${fails}` : 'ALL OK');

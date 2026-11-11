@@ -33,7 +33,7 @@ const _rvA = V();
 // scratch
 const _p = V(), _p2 = V(), _p3 = V(), _ankL = V(), _ankR = V(), _sh = V(), _shL = V(), _c = V(), _head = V(), _o = V(), _t = V(), _F = V(), _N = V(), _F2 = V(), _N2 = V(), _pole = V(), _hip = V(), _ank = V(), _v = V();
 const _q = Q(), _q2 = Q(), _q3 = Q(), _qp = Q(), _qc = Q(), _qh = Q(), _qn = Q(), _qs = Q(), _qf = Q(), _qk = Q(), _qr = Q(), _qd = Q();
-const _m = new THREE.Matrix4(), _mg = new THREE.Matrix4(), _one = new THREE.Vector3(1, 1, 1);
+const _m = new THREE.Matrix4(), _mg = new THREE.Matrix4(), _one = new THREE.Vector3(1, 1, 1), _ca = V(), _cb = V();
 
 /** Catmull-Rom through key points (array of Vector3) at keyframe times `ks` (ascending, 0..1), sampled at k. */
 export function pathAt(out, pts, ks, k) {
@@ -99,13 +99,25 @@ export class Kinetic {
   }
   /** Killed: dir = the killing shot's travel direction (world), strength, part ('head' crumples). */
   die(dir, strength = 1, part = 'body') {
-    const l = dir ? this._toLocalDir(dir, V()) : new THREE.Vector3(0, 0, -1); if (l.lengthSq() < 1e-4) l.set(0, 0, -1);
-    const head = part === 'head', blast = strength > 1.6;
+    const push = dir ? this._toLocalDir(dir, V()) : new THREE.Vector3(0, 0, -1); if (push.lengthSq() < 1e-4) push.set(0, 0, -1);
+    const head = part === 'head', blast = strength > 1.6, k = clamp(strength, 0.6, 2.6);
+    // momentum at the moment of death (local): a running body keeps going and pitches the way it was moving
+    const vs = this.velS ? this.velS.x : { x: 0, z: 0 }, c = Math.cos(this.yaw || 0), sn = Math.sin(this.yaw || 0);
+    const slide = new THREE.Vector3(vs.x * c - vs.z * sn, 0, vs.x * sn + vs.z * c), speed = slide.length();
+    const fall = push.clone().multiplyScalar(k * 0.9).addScaledVector(slide, 0.38); if (fall.lengthSq() < 1e-4) fall.copy(push);
+    const R = () => Math.random() - 0.5;
     this.death = {
-      dir: l.normalize(), th: 0, om: (head ? 0.25 : 0.9) * clamp(strength, 0.6, 2.6) + 0.15, b: new Spring(0, head ? 2.6 : 1.7, 1), t: 0, head, blast,
-      pivot: null, pel0: this.lastPel ? this.lastPel.clone() : new THREE.Vector3(0, this.hipH, 0), arm: new Spring3(2.2, 0.32), armInit: false, rest: false,
+      dir: fall.normalize(), th: 0, om: (head ? 0.25 : 0.9) * k + 0.15 + speed * 0.2, b: new Spring(0, head ? 2.6 : speed > 3 ? 2.2 : 1.7, 1), t: 0, head, blast,
+      slide: slide.multiplyScalar(speed > 1 ? 0.8 : 0).addScaledVector(push, blast ? 2.2 : 0), off: V(),
+      pivot: null, pel0: this.lastPel ? this.lastPel.clone() : new THREE.Vector3(0, this.hipH, 0), rest: false,
       ank: { Left: this.lastAnk ? this.lastAnk.Left.clone() : null, Right: this.lastAnk ? this.lastAnk.Right.clone() : null },
+      // flung limbs: underdamped springs so they whip out and settle, each death a little different
+      armL: new Spring3(2.1, 0.3), armR: new Spring3(2.3, 0.32), armInit: false,
+      sprL: { x: 0.44 + R() * 0.2, y: -0.12 + R() * 0.3, z: 0.12 + R() * 0.4 }, sprR: { x: -0.44 + R() * 0.2, y: -0.12 + R() * 0.3, z: 0.1 + R() * 0.4 },
+      bend: Math.random() < 0.5 ? 'Left' : 'Right', legSpread: 0.14 + Math.random() * 0.12,
     };
+    // killed while prone: already down, face first
+    if (this.proneW && this.proneW.x > 0.5) { const D = this.death; D.dir.set(0, 0, 1); D.th = 1.45; D.om = 0; D.rest = true; D.b.set(1); D.slide.set(0, 0, 0); }
     this.throwT = -1; this.swap = null;
   }
   _toLocalDir(d, out) { const g = this.cm.group, c = Math.cos(g.rotation.y), s = Math.sin(g.rotation.y); out.set(d.x * c - d.z * s, 0, d.x * s + d.z * c); const n = out.length(); return n > 1e-6 ? out.divideScalar(n) : out.set(0, 0, -1); }
@@ -451,72 +463,174 @@ export class Kinetic {
       fig.arm(side, _o, null, null, this._armPole(side, _sh, qc, 0));
     }
   }
-  // ---- death: topple about the feet with the knees buckling, head whipping, the free arm flailing ----
+  // ---- death: a ragdoll-like fall. The body topples about the feet (gravity on an inverted pendulum, knees
+  // buckling), carries the momentum it had, flings its limbs out on loose springs and comes to rest on the ground.
+  // Nothing goes under the surface: the trunk stops short of flat, and after posing, any part of the head, chest or
+  // hips that would sink lifts the whole body, while elbows and knees that would dip re-bend upward. ----
   _updateDeath(dt, st) {
-    const D = this.death, cm = this.cm, fig = this.fig, g = cm.group, s = this.s;
+    const D = this.death, s = this.s;
     if (!D) { this.death = null; this.die(null, 1); return this._updateDeath(dt, st); }
     D.t += dt;
     if (!D.pivot) { D.pivot = V(); const a = D.ank; if (a.Left && a.Right) D.pivot.addVectors(a.Left, a.Right).multiplyScalar(0.5).setY(0); }
-    // inverted pendulum about the feet: gravity takes over once it starts going; the ground stops it with a bump
-    const Lc = 0.95 * s, thMax = 1.42;
+    const Lc = 0.95 * s, thMax = 1.45;
     if (!D.rest) {
       D.om += (9.8 / Lc) * Math.sin(D.th + 0.06) * dt * (D.head ? 0.6 : 1); D.th += D.om * dt;
       if (D.th >= thMax) { D.th = thMax; D.om = -D.om * 0.22; if (Math.abs(D.om) < 0.35) { D.om = 0; D.rest = true; } }
     }
-    const b = D.b.step(1, dt), th = D.th;
-    const ax = _o.crossVectors(UP, D.dir).normalize(); _qd.setFromAxisAngle(ax, th);
+    // momentum: barely slowed while still falling, scrubbed off quickly once down
+    const down = D.th > thMax * 0.85, sp = Math.hypot(D.slide.x, D.slide.z);
+    if (sp > 1e-4) D.slide.multiplyScalar(Math.max(0, sp - (down ? 9 : 3.2) * dt) / sp);
+    D.off.addScaledVector(D.slide, dt);
+    D.bk = D.b.step(1, dt);
+    if (!D.kicked) { D.kicked = true; const ax = _o.crossVectors(UP, D.dir).normalize(); this.headRV.kick(-ax.x * 4, 0, -ax.z * 4); }
+    D.hr = this.headRV.step(0, 0, 0, dt);
+    // pose; if the trunk would sink, lift and pose again (springs step on the first pass only)
+    let lift = 0;
+    for (let pass = 0; pass < 3; pass++) {
+      this._poseDead(D, dt, lift, pass === 0);
+      const pen = this._sink(); if (pen <= 0.004 * s) break; lift += pen;
+    }
+  }
+  /**
+   * The body as capsules (bone segment + thickness), thickness measured from the figure's own mesh: for each bone, the
+   * distance from the bone segment that 99% of the vertices it carries stay within (thighs count as trunk: they hang
+   * off the pelvis, so only lifting the body clears them). Cached on the figure.
+   */
+  _caps() {
+    const fig = this.fig; if (fig._caps) return fig._caps;
+    const B = fig.b, segs = [['Hips', 'Spine02', 't'], ['Spine02', 'Spine01', 't'], ['Spine01', 'Spine', 't'], ['Spine', 'neck', 't'], ['neck', 'Head', 't'], ['Head', 'head_end', 't']];
+    for (const sd of ['Left', 'Right']) segs.push([sd + 'Shoulder', sd + 'Arm', 't'], [sd + 'Arm', sd + 'ForeArm', 'a' + sd], [sd + 'ForeArm', sd + 'Hand', 'a' + sd], [sd + 'Hand', '@hand', 'a' + sd], [sd + 'UpLeg', sd + 'Leg', 't'], [sd + 'Leg', sd + 'Foot', 'l' + sd], );
+    // feet aren't capsule-shaped (the bone sits at the ankle, the sole well below): they get a measured box instead
+    const caps = segs.filter(([a, b]) => B[a] && (b[0] === '@' || B[b])).map(([a, b, grp, fixed]) => ({ a, b, grp, r: (fixed || 0.05) * this.s, fixed: !!fixed }));
+    let sk = null; fig.root.traverse((o) => { if (o.isSkinnedMesh && !sk) sk = o; });
+    const shoe = {};
+    if (sk) {
+      const bones = sk.skeleton.bones, pos = sk.geometry.attributes.position, si = sk.geometry.attributes.skinIndex, sw = sk.geometry.attributes.skinWeight, v = V(), A = V(), Bp = V();
+      const byBone = new Map(caps.map((c) => [c.a, []]));
+      fig.root.updateMatrixWorld(true);
+      // the shoe as a box in a frame that sits square with the figure when the foot is at rest (sole flat, toes forward)
+      // and turns with the foot: tight around the shoe whatever way the foot bone's own axes happen to point
+      const footInv = {}, gInv = this.cm.group.matrixWorld.clone().invert();
+      for (const sd of ['Left', 'Right']) if (B[sd + 'Foot']) {
+        shoe[sd] = new THREE.Box3(); const ank = fig.pos(sd + 'Foot', V()), dq = fig.quat(sd + 'Foot', Q()).multiply(fig.rest[sd + 'Foot'].q.clone().invert());
+        footInv[sd] = new THREE.Matrix4().compose(ank, dq, _one).invert().multiply(gInv); // world -> shoe frame
+      }
+      for (let i = 0; i < pos.count; i += 2) {
+        let w = 0, bi = -1; for (let c = 0; c < 4; c++) { const x = sw.getComponent(i, c); if (x > w) { w = x; bi = si.getComponent(i, c); } }
+        const bn = bones[bi] && bones[bi].name, L = byBone.get(bn);
+        const fsd = bn === 'LeftFoot' || bn === 'LeftToeBase' ? 'Left' : bn === 'RightFoot' || bn === 'RightToeBase' ? 'Right' : null;
+        if (!L && !fsd) continue;
+        v.fromBufferAttribute(pos, i); sk.applyBoneTransform(i, v); v.applyMatrix4(sk.matrixWorld);
+        if (fsd && shoe[fsd]) shoe[fsd].expandByPoint(v.clone().applyMatrix4(footInv[fsd]));
+        if (L) L.push(v.applyMatrix4(_m.copy(this.cm.group.matrixWorld).invert()).clone());
+      }
+      for (const c of caps) {
+        const pts = byBone.get(c.a); if (c.fixed || !pts || pts.length < 8) continue;
+        this._capEnds(c, A, Bp); const ab = Bp.clone().sub(A), l2 = Math.max(1e-6, ab.lengthSq());
+        let d;
+        if (c.b === '@hand') { // a hand is flat: what matters lying palm-down is its thickness across the palm
+          const sd = c.a.startsWith('Left') ? 'Left' : 'Right', h = fig.hand[sd]; fig.quat(c.a, _q3); const n = h ? h.n.clone().applyQuaternion(_q3) : UP;
+          d = pts.map((p) => Math.abs(p.clone().sub(A).addScaledVector(ab, -0.5).dot(n))).sort((x, y) => x - y);
+        } else d = pts.map((p) => { const t = clamp(p.clone().sub(A).dot(ab) / l2, 0, 1); return p.distanceTo(A.clone().addScaledVector(ab, t)); }).sort((x, y) => x - y);
+        c.r = d[Math.floor(d.length * 0.99)];
+      }
+    }
+    // the shoulder and hip joints belong to the trunk: only lifting the body clears them
+    for (const sd of ['Left', 'Right']) for (const [j, from] of [[sd + 'Arm', sd + 'Arm'], [sd + 'Leg', sd + 'UpLeg']]) { const c = caps.find((x) => x.a === from); if (c && B[j]) caps.push({ a: j, b: j, grp: 't', r: c.r }); }
+    fig._shoe = shoe;
+    return (fig._caps = caps);
+  }
+  /** How far the lowest corner of a shoe is under the ground (0 if none). */
+  _shoeSink(side) {
+    const fig = this.fig; this._caps(); const box = fig._shoe && fig._shoe[side]; if (!box || box.isEmpty()) return 0;
+    fig.pos(side + 'Foot', _cb); fig.quat(side + 'Foot', _q3).multiply(_q2.copy(fig.rest[side + 'Foot'].q).invert());
+    const M = _m.compose(_cb, _q3, _one); let lo = Infinity;
+    for (let i = 0; i < 8; i++) { _ca.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).applyMatrix4(M); if (_ca.y < lo) lo = _ca.y; }
+    return Math.max(0, 0.004 * this.s - lo);
+  }
+  /** Current end points of a capsule (group space). */
+  _capEnds(c, A, Bp) {
+    const fig = this.fig; fig.pos(c.a, A);
+    if (c.b === '@hand') { const sd = c.a.startsWith('Left') ? 'Left' : 'Right', h = fig.hand[sd]; fig.quat(c.a, _q3); return h ? Bp.copy(h.palm).multiplyScalar(2).applyQuaternion(_q3).add(A) : Bp.copy(A); }
+    if (c.b === '@toe') { const sd = c.a.startsWith('Left') ? 'Left' : 'Right'; fig.pos(sd + 'Foot', Bp); return Bp.sub(A).multiplyScalar(-0.6).add(A); }
+    return fig.pos(c.b, Bp);
+  }
+  /** Deepest sinking (r - lowest point) of a capsule group: 't' trunk, 'aLeft' arm, 'lRight' leg... (0 if none). */
+  _sink(grp = 't') {
+    let pen = 0;
+    for (const c of this._caps()) { if (c.grp !== grp) continue; this._capEnds(c, _ca, _cb); pen = Math.max(pen, c.r - _ca.y, c.r - _cb.y); }
+    return pen;
+  }
+  _poseDead(D, dt, lift, step) {
+    const cm = this.cm, fig = this.fig, g = cm.group, s = this.s, th = D.th, b = D.bk, thMax = 1.45;
+    const ax = _p3.crossVectors(UP, D.dir).normalize(); _qd.setFromAxisAngle(ax, th);
+    const pivot = _p2.copy(D.pivot).add(D.off);
     // pelvis: knees fold (height shrinks), the whole body pivots, never sinking into the ground
     const h = lerp(this.hipH * 0.96, (D.head ? 0.3 : 0.45) * s, b);
-    _p.set(0, h, 0).applyQuaternion(_qd).add(D.pivot); _p.y = Math.max(_p.y, 0.13 * s);
-    const w0 = smooth(0, 0.18, D.t); _p.lerpVectors(D.pel0, _p, w0);
+    _p.set(0, h, 0).applyQuaternion(_qd).add(pivot); _p.y = Math.max(_p.y, 0.06 * s);
+    const w0 = smooth(0, 0.18, D.t); _p.lerpVectors(_v.copy(D.pel0).add(D.off), _p, w0); _p.y += lift;
     qE(_q, this.lowYaw ? clamp(wrapPi(this.lowYaw.x - this.yaw), -1, 1) : 0, 0, 0); _qp.copy(_qd).multiply(_q).multiply(_q2.setFromAxisAngle(ax, -0.25 * b));
-    // trunk: arches with the fall, head lags (whiplash) then settles
-    const arch = 0.25 * smooth(0.3, 1, th / thMax);
-    _qc.copy(_qd).multiply(_q2.setFromAxisAngle(ax, arch + 0.15 * b));
-    const hr = this.headRV.step(0, 0, 0, dt); if (!D.kicked) { D.kicked = true; this.headRV.kick(-ax.x * 4, 0, -ax.z * 4); }
-    _qh.copy(_qc).multiply(_q2.setFromAxisAngle(ax, 0.2 * smooth(0.6, 1, th / thMax))).premultiply(qRV(_q3, hr));
+    // trunk: arches with the fall, but the chest never rotates past flat; the head lags (whiplash) then settles
+    const arch = Math.min(0.25 * smooth(0.3, 1, th / thMax) + 0.15 * b, Math.max(0, 1.5 - th));
+    _qc.copy(_qd).multiply(_q2.setFromAxisAngle(ax, arch));
+    const hx = Math.min(0.2 * smooth(0.6, 1, th / thMax), Math.max(0, 1.52 - th - arch));
+    _qh.copy(_qc).multiply(_q2.setFromAxisAngle(ax, hx)).premultiply(qRV(_q3, D.hr));
     fig.begin(g); fig.setPelvis(_p, _qp);
     fig.setRot('Spine02', _q.copy(_qp).slerp(_qc, 0.33)); fig.setRot('Spine01', _q.copy(_qp).slerp(_qc, 0.66)); fig.setRot('Spine', _qc);
     fig.setRot('neck', _q.copy(_qc).slerp(_qh, 0.5)); fig.setRot('Head', _qh);
-    // gun: carried by the chest as it was at the moment of death, dropping away from the body
+    // gun: carried by the chest as at the moment of death, then let go: it drops flat on its side beside the body
     fig.quat('Spine', _qs); fig.pos('Spine', _c);
+    let gripW = 0;
     if (!D.gunRel && cm.gunMesh) { cm.gunMount.updateMatrixWorld(true); _m.compose(_c, _qs, _one).invert(); D.gunRel = new THREE.Matrix4().multiplyMatrices(_m, cm.gunMount.matrix); }
     if (D.gunRel && cm.gunMesh) {
-      // carried by the chest as the body goes over, then let go: it drops flat on its side beside the body
       _m.compose(_c, _qs, _one).multiply(D.gunRel); _m.decompose(cm.gunMount.position, cm.gunMount.quaternion, _v);
-      const rel = smooth(0.35, 1, th / thMax) * smooth(0.25, 0.9, D.t);
-      if (!D.gunGround && th / thMax > 0.35) {
+      const rel = smooth(0.3, 0.9, th / thMax) * smooth(0.15, 0.7, D.t);
+      if (!D.gunGround && th / thMax > 0.3) {
         const side = _o.set(-1, 0, 0).applyQuaternion(_qp); side.y = 0; side.normalize();
         const gy = Math.atan2(D.dir.x, D.dir.z) + 1.2 + (Math.random() - 0.5) * 0.8;
-        D.gunGround = { p: _c.clone().addScaledVector(side, 0.32 * s).setY(0.035 * s), q: qE(Q(), gy, 0, Math.PI / 2) };
+        D.gunGround = { p: _c.clone().addScaledVector(side, 0.38 * s).add(D.slide.clone().multiplyScalar(0.12)).setY(0.035 * s), q: qE(Q(), gy, 0, Math.PI / 2) };
       }
       if (D.gunGround) { cm.gunMount.position.lerp(D.gunGround.p, rel); cm.gunMount.quaternion.slerp(D.gunGround.q, rel); }
       cm.gunMount.position.y = Math.max(cm.gunMount.position.y, 0.035 * s); cm.gunMount.updateMatrixWorld(true);
-      const H = cm._fitHands({ reloading: false }); _mg.copy(g.matrixWorld).invert().multiply(cm.gunMesh.matrixWorld);
-      fig.pos('RightArm', _sh); _t.copy(H.Right).applyMatrix4(_mg); _F.copy(H.RightF).transformDirection(_mg); _N.copy(H.RightN).transformDirection(_mg);
-      // the hand stays on the grip until the gun is let go, then the arm falls limp
-      const lw = smooth(0.25, 0.6, rel);
-      if (lw > 0) {
-        _o.set(-0.3 * s, -0.4 * s, 0.1 * s).applyQuaternion(_qc).add(_sh); _o.y = Math.max(_o.y, 0.05 * s);
-        if (!D.armR) { D.armR = new Spring3(2.4, 0.4); D.armR.set(_t.x, _t.y, _t.z); }
-        const r = D.armR.step(_o.x, _o.y, _o.z, dt); _p2.set(r.x, Math.max(r.y, 0.05 * s), r.z); _t.lerp(_p2, lw);
-      }
-      fig.arm('Right', _t, lw < 1 ? _F : null, lw < 1 ? _N : null, this._armPole('Right', _sh, _qc, 0));
-    } else { fig.pos('RightArm', _sh); _t.set(-0.1 * s, -0.5 * s, 0.05 * s).applyQuaternion(_qc).add(_sh); fig.arm('Right', _t, null, null, this._armPole('Right', _sh, _qc, 0)); }
-    // the free arm: flung out and lagging, then lying on the ground
-    fig.pos('LeftArm', _shL); _t.set(0.32 * s, -0.36 * s, 0.12 * s).applyQuaternion(_qc).add(_shL); _t.y = Math.max(_t.y, 0.05 * s);
-    if (!D.armInit) { D.armInit = true; D.arm.set(_t.x, _t.y, _t.z); if (this.lastHandL) D.arm.set(this.lastHandL.x, this.lastHandL.y, this.lastHandL.z); }
-    const ar = D.arm.step(_t.x, _t.y, _t.z, dt); _t.set(ar.x, Math.max(ar.y, 0.05 * s), ar.z);
-    fig.arm('Left', _t, null, null, _pole.set(0.5, 0.2, -0.4).applyQuaternion(_qc).add(_shL));
-    // legs: feet stay put, pulled in only when out of reach; knees fold upward as the body goes down
+      gripW = 1 - smooth(0.15, 0.5, rel);
+    }
+    // arms: the free hand flies out at once, the gun hand once the gun is let go; both whip out and settle on the ground
     for (const side of ['Left', 'Right']) {
-      const f = this.feet[side], a = D.ank[side] ? _ank.copy(D.ank[side]) : _ank.set(f.sgn * this.width, this.ankleH, 0);
-      _hip.copy(this.hipJ[side]).applyQuaternion(_qp).add(_p);
-      const L = this.L[side] * 0.97, d = a.distanceTo(_hip); if (d > L) a.sub(_hip).multiplyScalar(L / d).add(_hip);
+      const sh = side === 'Left' ? _shL : _sh; fig.pos(side + 'Arm', sh);
+      const spr = side === 'Left' ? D.sprL : D.sprR, sp = side === 'Left' ? D.armL : D.armR;
+      _t.set(spr.x * s, spr.y * s, spr.z * s).applyQuaternion(_qc).add(sh);
+      _t.y = lerp(Math.max(_t.y, 0.02 * s), 0.02 * s, smooth(0.45, 1, th / thMax)); // flung out, then down flat on the ground
+      if (!D.armInit) { const last = side === 'Left' ? this.lastHandL : this._lastRP; const st0 = last || _t; sp.set(st0.x, st0.y, st0.z); }
+      const a = step ? sp.step(_t.x, _t.y, _t.z, dt) : sp.x; _ank.set(a.x, Math.max(a.y, 0.02 * s), a.z);
+      let F = null, N = null;
+      if (side === 'Right' && gripW > 0 && cm.gunMesh) {
+        const H = cm._fitHands({ reloading: false }); _mg.copy(g.matrixWorld).invert().multiply(cm.gunMesh.matrixWorld);
+        _v.copy(H.Right).applyMatrix4(_mg); _ank.lerp(_v, gripW); if (gripW > 0.5) { F = _F.copy(H.RightF).transformDirection(_mg); N = _N.copy(H.RightN).transformDirection(_mg); }
+      }
+      // a limp hand lies flat, palm down, fingers pointing on from the arm
+      if (!F) { F = _F.subVectors(_ank, sh).setY(0); if (F.lengthSq() < 1e-6) F.set(1, 0, 0); F.normalize(); N = _N.set(0, -1, 0); }
+      // elbow out and up off the ground
+      _pole.set(side === 'Left' ? 0.5 : -0.5, 0.35, -0.3).applyQuaternion(_qc).add(sh);
+      fig.arm(side, _ank, F, N, _pole);
+      fig.pos(side + 'ForeArm', _v); if (_v.y < 0.05 * s) { _pole.copy(sh).add(_o.set(0, 1, 0)); fig.arm(side, _ank, F, N, _pole); }
+      for (let k = 0; k < 3; k++) { const pen = this._sink('a' + side); if (pen <= 0.003 * s) break; _ank.y += pen * 1.2; fig.arm(side, _ank, F, N, _pole); }
+    }
+    D.armInit = true;
+    // legs: dragged along with the body, then splayed out in line with the trunk; one knee bent
+    const lay = smooth(0.35, 1, th / thMax), bodyDown = _o.set(0, -1, 0).applyQuaternion(_qd);
+    for (const side of ['Left', 'Right']) {
+      const f = this.feet[side], hip = _hip.copy(this.hipJ[side]).applyQuaternion(_qp).add(_p);
+      const a = D.ank[side] ? _ank.copy(D.ank[side]).add(D.off) : _ank.set(f.sgn * this.width, this.ankleH, 0).add(D.off);
+      const bent = side === D.bend, L = this.L[side];
+      const lie = _t.copy(hip).addScaledVector(bodyDown, L * (bent ? 0.62 : 0.95)); lie.x += f.sgn * D.legSpread * s; lie.y = Math.max(lie.y, this.ankleH + (bent ? 0.1 * s : 0));
+      a.lerp(lie, lay);
+      const d = a.distanceTo(hip); if (d > L * 0.97) a.sub(hip).multiplyScalar((L * 0.97) / d).add(hip);
       a.y = Math.max(a.y, this.ankleH);
-      _pole.set(f.sgn * 0.25, -0.1, 1).lerp(_o.set(f.sgn * 0.3, 1, 0.2), smooth(0.2, 1, b)).normalize().multiplyScalar(0.6).add(_hip);
-      qE(_qf, 0, lerp(0, D.dir.z < 0 ? -0.6 : 1.0, smooth(0.4, 1, th / thMax)), 0);
+      _pole.set(f.sgn * (bent ? 0.6 : 0.25), -0.1, 1).lerp(_v.set(f.sgn * (bent ? 0.7 : 0.3), 1, 0.2), smooth(0.2, 1, b)).normalize().multiplyScalar(0.6).add(hip);
+      qE(_qf, 0, lerp(0, D.dir.z < 0 ? -0.6 : 1.0, lay), 0);
       fig.leg(side, a, _qf, _pole);
+      fig.pos(side + 'Leg', _v); if (_v.y < 0.06 * s) { _pole.copy(hip).add(_v.set(f.sgn * 0.4, 1, 0)); fig.leg(side, a, _qf, _pole); }
+      for (let k = 0; k < 3; k++) { const pen = Math.max(this._sink('l' + side), this._shoeSink(side)); if (pen <= 0.003 * s) break; a.y += pen * 1.2; fig.leg(side, a, _qf, _pole); }
     }
   }
 }

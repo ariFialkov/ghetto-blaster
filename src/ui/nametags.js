@@ -4,8 +4,9 @@ import * as THREE from 'three';
 const _v = new THREE.Vector3(), _c = new THREE.Vector3();
 export class NameTags {
   constructor(container) { this.el = container; this.tags = new Map(); }
-  update(match) {
-    const cam = match.camera, p = match.player, world = match.map.world; const W = window.innerWidth, H = window.innerHeight;
+  /** player / camera: whose view the tags are for; W x H: the size of that view's HUD layer (split screen: half). */
+  update(match, player = match.player, camera = match.camera, W = window.innerWidth, H = window.innerHeight) {
+    const cam = camera, p = player, world = match.map.world;
     const seen = new Set();
     for (const a of match.actors) {
       if (a === p || !a.alive || a.isDog || a.isSentry) continue;

@@ -28,17 +28,18 @@ export class Director {
       const loserFinal = m.mode.scoreLimit - this.rng.int(3, Math.max(4, Math.round(m.mode.scoreLimit * 0.35)));
       this.plan = { kind: 'tdm', W, L: 1 - W, loserFinal, playerWins };
     } else {
-      const bots = m.bots.slice();
-      const n = bots.length + 1;
+      const bots = m.bots.slice(), humans = m.players.length || 1;
+      // split screen: `placement` is the better-placed human's; the other floats below it (n - 1 at worst)
+      const n = bots.length + humans, top = n - (humans - 1);
       // placement: mildly weighted toward the middle so results feel believable
-      const weights = []; for (let r = 1; r <= n; r++) weights.push(1 + Math.sin((r / (n + 1)) * Math.PI) * 0.8);
+      const weights = []; for (let r = 1; r <= top; r++) weights.push(1 + Math.sin((r / (n + 1)) * Math.PI) * 0.8);
       const tot = weights.reduce((a, b) => a + b, 0); let x = this.rng.next() * tot, placement = 1;
-      for (let r = 0; r < n; r++) { x -= weights[r]; if (x <= 0) { placement = r + 1; break; } }
+      for (let r = 0; r < top; r++) { x -= weights[r]; if (x <= 0) { placement = r + 1; break; } }
       this.rng.shuffle(bots);
       // stronger bots are more likely to be planned above the player
       bots.sort((a, b) => (b.skill + this.rng.float(-0.35, 0.35)) - (a.skill + this.rng.float(-0.35, 0.35)));
       const above = bots.slice(0, placement - 1), below = bots.slice(placement - 1);
-      above.forEach((b, i) => { b.plannedRank = i + 1; }); p.plannedRank = placement; below.forEach((b, i) => { b.plannedRank = placement + 1 + i; });
+      above.forEach((b, i) => { b.plannedRank = i + 1; }); for (const h of m.players.length ? m.players : [p]) h.plannedRank = placement; below.forEach((b, i) => { b.plannedRank = placement + humans + i; });
       this.plan = { kind: mode.id, placement, above, below, n, winner: placement === 1 ? p : above[0] };
     }
     for (const a of m.actors) this.mult.set(a, { dmg: 1, incoming: 1, acc: 1, react: 1, attract: 0 });
@@ -68,14 +69,20 @@ export class Director {
     this.tickT -= dt; if (this.tickT > 0) return; this.tickT = 0.5;
     if (this.plan.kind === 'tdm') this.tickTDM(); else this.tickRanked();
   }
+  /** Could a human see this? (split screen: either player's camera) */
   _visibleToPlayer(a) {
-    const p = this.m.player; if (!p || !a) return false;
-    const d = a.pos.distanceTo(p.pos); if (d > 60) return false;
-    const cam = this.m.camera; cam.getWorldDirection(_v);
-    const to = a.chest(new THREE.Vector3()).sub(cam.position); const dist = to.length(); to.divideScalar(dist);
-    if (to.dot(_v) < 0.45) return false; // outside a generous view cone
-    return this.m.map.world.los(cam.position, a.chest(new THREE.Vector3()));
+    if (!a) return false;
+    const humans = this.m.players && this.m.players.length ? this.m.players : this.m.player ? [this.m.player] : [];
+    for (const p of humans) {
+      if (a.pos.distanceTo(p.pos) > 60) continue;
+      const cam = p.camera || this.m.camera; cam.getWorldDirection(_v);
+      const to = a.chest(new THREE.Vector3()).sub(cam.position); const dist = to.length(); to.divideScalar(dist);
+      if (to.dot(_v) < 0.45) continue; // outside a generous view cone
+      if (this.m.map.world.los(cam.position, a.chest(new THREE.Vector3()))) return true;
+    }
+    return false;
   }
+  _humans() { return this.m.players && this.m.players.length ? this.m.players : [this.m.player]; }
   /** Make `killer` kill `victim`: rig a real duel if they can see each other, resolve directly if hidden from the player. */
   fateKill(killer, victim, allowVisible = false) {
     if (!killer || !victim || !killer.alive || !victim.alive || killer === victim) return false;
@@ -120,9 +127,11 @@ export class Director {
     for (const b of botsW) { const mu = this._mu(b); mu.dmg = wBuff; mu.acc = clamp(1 + dW * 0.05, 0.6, 1.8); mu.react = clamp(1 - dW * 0.03, 0.5, 1.3); mu.incoming = clamp(1 - dW * 0.03, 0.6, 1.2); mu.attract = 0; }
     for (const b of botsL) { const mu = this._mu(b); mu.dmg = lNerf; mu.acc = clamp(1 - oL * 0.06, 0.5, 1.3); mu.react = clamp(1 + oL * 0.04, 0.8, 1.6); mu.incoming = clamp(1 + oL * 0.04, 0.9, 1.6); mu.attract = 0; }
     // the player: never feel cheated. Only gentle adjustments, and hunters when the losing side must bleed.
-    const pm = this._mu(p);
-    if (playerOnW) { pm.dmg = clamp(1 + dW * 0.02, 0.9, 1.3); pm.incoming = clamp(1 - dW * 0.02, 0.8, 1.1); }
-    else { pm.dmg = clamp(1 - oL * 0.03, 0.75, 1.05); pm.incoming = clamp(1 + oL * 0.04, 0.9, 1.5); if (oL > 2) for (const b of botsW.slice(0, Math.min(botsW.length, 1 + Math.floor(overL / 3)))) { this._mu(b).attract = 30; if (!b.hunt && b.rng.chance(0.5)) { b.hunt = p; } } else for (const b of botsW) { if (b.hunt === p) b.hunt = null; } }
+    const humans = this._humans();
+    for (const h of humans) { const pm = this._mu(h);
+      if (playerOnW) { pm.dmg = clamp(1 + dW * 0.02, 0.9, 1.3); pm.incoming = clamp(1 - dW * 0.02, 0.8, 1.1); }
+      else { pm.dmg = clamp(1 - oL * 0.03, 0.75, 1.05); pm.incoming = clamp(1 + oL * 0.04, 0.9, 1.5); } }
+    if (!playerOnW) { if (oL > 2) botsW.slice(0, Math.min(botsW.length, 1 + Math.floor(overL / 3))).forEach((b, i) => { this._mu(b).attract = 30; if (!b.hunt && b.rng.chance(0.5)) { b.hunt = humans[i % humans.length]; } }); else for (const b of botsW) { if (b.hunt && b.hunt.isPlayer) b.hunt = null; } }
     // fate kill pacing
     let rate = 0; // kills per second for W
     if (dW > 2) rate += Math.min(0.6, (dW - 2) * 0.05);
@@ -149,15 +158,18 @@ export class Director {
   // ---------------- FFA / Gun Game ----------------
   _score(a) { return this.plan.kind === 'gungame' ? a.gunGameIndex : a.kills; }
   tickRanked() {
-    const m = this.m, P = this.plan, p = m.player, gg = P.kind === 'gungame';
+    const m = this.m, P = this.plan, gg = P.kind === 'gungame', humans = this._humans();
+    // split screen: the ordering is anchored on whichever human is ahead (either one can carry the bet)
+    const p = humans.reduce((a, b) => (this._score(b) > this._score(a) ? b : a));
     const limit = gg ? m.mode.gunCount : m.mode.scoreLimit, T = m.mode.timeLimit, f = Math.min(1, m.elapsed / T), rem = T - m.elapsed;
     const ps = this._score(p);
-    const pm = this._mu(p); pm.dmg = 1; pm.incoming = 1;
+    for (const h of humans) { const pm = this._mu(h); pm.dmg = 1; pm.incoming = 1; }
+    const pm = this._mu(p);
     const totalKills = m.actors.reduce((a, x) => a + (x.isCrew ? 0 : x.kills), 0) + 1;
     const desiredTotal = limit * (P.n * 0.4) * Math.min(1, f / 0.92) + 2; // the winner reaches the limit at ~90% time; others trail
     this.pace = clamp(this.pace * 0.8 + 0.2 * clamp(desiredTotal / totalKills, 0.25, 1.5), 0.25, 1.5);
     // desired pace for the winner so the match ends around 90% of the time limit
-    const winner = P.winner; const desiredWin = limit * Math.min(1, f / 0.92);
+    const winner = P.placement === 1 ? p : P.winner; const desiredWin = limit * Math.min(1, f / 0.92);
     const above = P.above, below = P.below;
     let fateRate = 0; const wants = []; // [killer, deficit]
     above.forEach((b, i) => {
@@ -174,18 +186,18 @@ export class Director {
     // the player must die more when planned low: hunters from the above set
     const aliveAbove = this._alive(above);
     const playerTooGood = above.some((b) => this._score(b) < ps + 1);
-    for (const b of aliveAbove) { if (playerTooGood && b.rng.chance(0.3)) { b.hunt = p; this._mu(b).attract = 30; } else if (b.hunt === p && !playerTooGood) b.hunt = null; }
-    if (playerTooGood) pm.incoming = 1.25;
+    for (const b of aliveAbove) { if (playerTooGood && b.rng.chance(0.3)) { b.hunt = p; this._mu(b).attract = 30; } else if (b.hunt && b.hunt.isPlayer && !playerTooGood) b.hunt = null; }
+    if (playerTooGood) for (const h of humans) this._mu(h).incoming = 1.25;
     // hard guards. Final ordering only needs: every planned-above bot >= player, every planned-below bot < player (ties go to planned rank).
     const aboveOk = above.every((b) => this._score(b) >= ps), belowOk = below.every((b) => this._score(b) <= ps);
     this.guard = (a, v) => {
       let k = 1;
-      if (a === p) {
-        if (P.placement > 1 && ps >= limit - 1 && this._score(winner) < limit) k *= 0.03; // player can't finish before the planned winner
+      if (a.isPlayer) {
+        if (P.placement > 1 && ps >= limit - 1 && this._score(winner) < limit) k *= 0.03; // the players can't finish before the planned winner
         if (P.placement > 1 && !aboveOk) k *= 0.35; // let the planned-above bots catch up
       } else if (below.includes(a) && this._score(a) >= ps) k *= 0.03;
-      if (P.placement === 1 && a !== p && this._score(a) >= limit - 1) k *= 0.03; // nobody beats the player to the limit
-      if (a !== p && this._score(a) >= limit - 1 && !(aboveOk && belowOk)) k *= 0.03; // nobody closes it out before the ordering holds
+      if (P.placement === 1 && !a.isPlayer && this._score(a) >= limit - 1) k *= 0.03; // nobody beats the players to the limit
+      if (!a.isPlayer && this._score(a) >= limit - 1 && !(aboveOk && belowOk)) k *= 0.03; // nobody closes it out before the ordering holds
       return k;
     };
     if (!aboveOk) fateRate += 0.5;

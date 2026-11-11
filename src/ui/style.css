@@ -375,3 +375,17 @@ body.gamepad .reopen-loadout::after { content: ' ▼'; color: var(--accent2); }
 .gg-step.final { border-color: var(--accent2); background: rgba(242,180,30,0.12); }
 .gg-step.final b { color: var(--accent2); }
 
+
+/* ---- 2-player split screen (desktop) ---- */
+body.split #hud { right: 50%; }
+#hud2 { left: 50%; pointer-events: none; z-index: 5; }
+#hud2 button { pointer-events: auto; }
+body.split #hud2::before { content: ''; position: absolute; left: -2px; top: 0; bottom: 0; width: 4px; background: rgba(8, 10, 14, 0.92); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+body.split .hud-center-msg { font-size: clamp(18px, 2.6vw, 34px); }
+body.split #minimap { width: 140px; height: 140px; }
+.split-tag { position: absolute; top: calc(12px + var(--safe-t)); left: calc(14px + var(--safe-l)); font-family: var(--font-head); font-size: 15px; letter-spacing: 0.14em; color: #fff; background: #1e4fc0; padding: 3px 10px; border-radius: 6px; box-shadow: 0 2px 0 rgba(0, 0, 0, 0.45); }
+.split-tag.p2 { background: #c9a227; color: #1a1408; }
+.players-toggle { display: flex; align-items: center; gap: 8px; margin-left: auto; margin-right: 18px; }
+.players-toggle .pt { font-family: var(--font-head); letter-spacing: 0.12em; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 2px solid rgba(255, 255, 255, 0.25); background: rgba(10, 14, 22, 0.55); color: #cfd3dc; cursor: pointer; }
+.players-toggle .pt.on { background: #ffd166; border-color: #ffd166; color: #1a1408; }
+.players-toggle .pt-note { font-size: 12px; letter-spacing: 0.08em; color: #ffd166; max-width: 260px; line-height: 1.25; }

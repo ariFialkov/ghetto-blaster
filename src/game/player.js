@@ -10,7 +10,9 @@ const _dir = new THREE.Vector3(), _o = new THREE.Vector3(), _t = new THREE.Vecto
 export class Player extends Actor {
   constructor(match, opts) {
     super(match, { ...opts, isPlayer: true });
-    this.camera = match.camera;
+    // split screen gives player 2 its own camera, view-model camera, first-person effects layer and input
+    this.camera = opts.camera || match.camera; this.vmCamera = opts.vmCamera || match.engine.vmCamera; this.vmFx = opts.vmFx || null;
+    this.input = opts.input || match.input; this.slot = opts.slot || 1;
     this.yaw = opts.yaw || 0; this.pitch = 0;
     this.recoilP = 0; this.recoilY = 0; this.kickP = 0; this.kickY = 0;
     this.adsBlend = 0; this.fov = match.settings.fov || 75; this.curFov = this.fov;
@@ -23,7 +25,7 @@ export class Player extends Actor {
     this.leanDir = 0;
     this.aimPoint = new THREE.Vector3();
     this.sensitivity = 1;
-    this.view = new ViewModel(match.engine.vmCamera, { plastic: this.model.plastic, skin: this.model.skinTone, bareArms: this.model.hat === 'bandana' });
+    this.view = new ViewModel(this.vmCamera, { plastic: this.model.plastic, skin: this.model.skinTone, bareArms: this.model.hat === 'bandana' });
     this.view.setWeapon(this.weapon.def);
     this.model.setVisible(false); // first person: own body hidden while alive
     this.lastLook = { dx: 0, dy: 0 };
@@ -36,7 +38,7 @@ export class Player extends Actor {
     // loadout or streak changes made mid-match take effect on the next spawn (COD rules)
     if (this.nextLoadout) { this.setLoadout(this.nextLoadout); this.nextLoadout = null; }
     if (this.view && this.view.weapon !== this.weapon.def) this.view.setWeapon(this.weapon.def); // spawn resets to the primary
-    if (this.nextStreaks) { const st = this.match.streakState; this.nextStreaks.forEach((d, i) => { if (d && st.picks[i] !== d) { st.picks[i] = d; st.used[i] = false; } }); this.nextStreaks = null; st.dirty = true; }
+    if (this.nextStreaks) { const st = this.streakState || this.match.streakState; this.nextStreaks.forEach((d, i) => { if (d && st.picks[i] !== d) { st.picks[i] = d; st.used[i] = false; } }); this.nextStreaks = null; st.dirty = true; }
   }
   get sliding() { return this.slideT >= 0; }
   /** COD-style slide: duck while sprinting carries your momentum low along the ground, then settles into a crouch. */
@@ -46,7 +48,7 @@ export class Player extends Actor {
     this.slideSpeed0 = Math.max(h, 6.5) * 1.4; this.slideT = 0; this.slideDur = 0.85; this.slideToProne = false;
     const right = new THREE.Vector3(-Math.cos(this.yaw), 0, Math.sin(this.yaw)); this.slideSide = this.slideDir.dot(right) > 0.2 ? -1 : 1;
     this.stance = 'crouch'; this.sprint = false; this.kickP -= 0.02;
-    m.audio('whoosh', this, null, { vol: 0.9 }); m.input.rumble?.(0.35, 0.15, 300);
+    m.audio('whoosh', this, null, { vol: 0.9 }); this.input.rumble?.(0.35, 0.15, 300);
   }
   update(dt, input) {
     const m = this.match;
@@ -58,7 +60,7 @@ export class Player extends Actor {
     this.lastLook = input.look;
     // controller aim assist: slowdown near enemies, and a short snap toward the closest one when you aim down sights
     let assist = 1;
-    const aa = input.pad && m.settings.aimAssist !== false && !this.frozen && this.alive;
+    const aa = (input.pad || input.assist) && m.settings.aimAssist !== false && !this.frozen && this.alive;
     if (aa) {
       const t = this._assistScan(0.02 + (this.ads ? 0.015 : 0));
       if (t) assist = this.ads ? 0.45 : 0.6;
@@ -95,7 +97,7 @@ export class Player extends Actor {
     if (P.has('lethal')) m.throwEquipment(this, 'lethal');
     if (P.has('tactical')) m.throwEquipment(this, 'tactical');
     for (let i = 0; i < 3; i++) if (P.has('streak' + (i + 1))) m.useStreak(this, i);
-    if (m.input.mobile && !input.pad) { if (P.has('peekR')) this.leanDir = this.leanDir ? 0 : 1; } else this.leanDir = input.peek;
+    if (this.input.mobile && !input.pad) { if (P.has('peekR')) this.leanDir = this.leanDir ? 0 : 1; } else this.leanDir = input.peek;
     this.lean = this.leanDir;
     // ADS
     const wantAds = input.ads && !this.frozen && this.swapT <= 0 && this.fx.stun <= 0;
@@ -145,7 +147,7 @@ export class Player extends Actor {
         this.pitch += w.recoilV * 0.0035 * kickMult; // permanent climb (COD-like)
         this.view.onShot(w);
         const heavy = w.type === 'shotgun' || w.type === 'sniper' || w.type === 'revolver';
-        m.input.rumble?.(heavy ? 0.55 : 0.2, heavy ? 0.9 : 0.3, heavy ? 140 : 55);
+        this.input.rumble?.(heavy ? 0.55 : 0.2, heavy ? 0.9 : 0.3, heavy ? 140 : 55);
         this.camShake = Math.min(1, this.camShake + (w.type === 'sniper' || w.type === 'shotgun' ? 0.5 : 0.15));
       }
     } else if (trigger && this.weapon.mag === 0 && !this.reloading) { this.startReload(); }
@@ -199,7 +201,7 @@ export class Player extends Actor {
       cam.position.copy(this.camPos); cam.lookAt(pivot);
       this.model.setVisible(true);
       this.view.update(dt, { dead: true });
-      m.engine.updateSunTarget(this.body.pos);
+      if (!m.split) m.engine.updateSunTarget(this.body.pos);
       return;
     }
     this.model.setVisible(false);
@@ -218,9 +220,9 @@ export class Player extends Actor {
     cam.rotateZ(-this.model.lean * 0.1 + this.kickY * 0.5 + Math.cos(this.bobPhase) * bobA * 0.3 + this.slideBlend * 0.13 * (this.slideSide || 1) + crawlSway);
     cam.rotateX(this.kickP * 0.6);
     cam.updateMatrixWorld();
-    const vc = m.engine.vmCamera; vc.position.copy(cam.position); vc.quaternion.copy(cam.quaternion); vc.updateMatrixWorld(true);
+    const vc = this.vmCamera; vc.position.copy(cam.position); vc.quaternion.copy(cam.quaternion); vc.updateMatrixWorld(true);
     const bv = this.body.vel, vRight = -bv.x * Math.cos(this.yaw) + bv.z * Math.sin(this.yaw), vFwd = bv.x * Math.sin(this.yaw) + bv.z * Math.cos(this.yaw);
     this.view.update(dt, { ads: this.ads, sprint: this.sprint, moving: this.moving, speed: this.speed, onGround: this.body.onGround, vy: bv.y, vRight, vFwd, reloading: this.reloading, reloadT: this.reloadT, reloadTime: w.reload, look: this.lastLook, bobPhase: this.bobPhase, dead: false, hidden: scoped, lean: this.model.lean, slide: this.sliding, crawl: this.body.prone && this.moving, prone: this.body.prone });
-    m.engine.updateSunTarget(this.body.pos);
+    if (!m.split) m.engine.updateSunTarget(this.body.pos);
   }
 }

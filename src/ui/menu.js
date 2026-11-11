@@ -1,4 +1,5 @@
 // All non-HUD screens. Pure DOM; the game state machine in main.js drives these.
+import { P2_KEY_ROWS } from '../core/input.js';
 import { Podium } from './podium.js';
 import { STOCK_LOADOUTS, allLoadouts, getSave, persist, resolveLoadout } from '../game/loadouts.js';
 import { WEAPONS, PRIMARIES, SECONDARIES, weaponStats, GUN_GAME_ORDER } from '../game/weapons.js';
@@ -34,6 +35,15 @@ export function showModes(arts, wallet, onPick) {
     d.onclick = () => { sfx('ui'); onPick(mode); };
     grid.appendChild(d);
   });
+}
+/** Desktop: 1 or 2 players (split screen). Shows how player 2 will play with what's plugged in right now. */
+export function playersToggle(n, onChange, assign) {
+  let el = $('players-toggle');
+  if (!el) { el = document.createElement('div'); el.id = 'players-toggle'; el.className = 'players-toggle'; document.querySelector('#screen-modes .modes-header').appendChild(el); }
+  const how = (a) => (a.mode === 'pad2' ? 'P1 + P2 ON CONTROLLERS' : a.mode === 'pad1' ? 'P1 KEYBOARD & MOUSE · P2 CONTROLLER' : 'P1 WASD + MOUSE · P2 ARROW KEYS');
+  const render = () => { el.innerHTML = `<button class="pt ${n === 1 ? 'on' : ''}" data-n="1">1 PLAYER</button><button class="pt ${n === 2 ? 'on' : ''}" data-n="2">2 PLAYERS</button><span class="pt-note">${n === 2 ? 'SPLIT SCREEN · ' + how(assign) : ''}</span>`;
+    el.querySelectorAll('.pt').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); n = +b.dataset.n; onChange(n); render(); }; }); };
+  render();
 }
 export function hideModes() { $('screen-modes').classList.remove('show'); hide('screen-modes'); }
 
@@ -132,7 +142,9 @@ export function showResults(result, match, payout, wallet, onAgain, onMenu) {
   hideAll(); show('screen-results');
   const t = $('results-title'); t.className = 'results-title ' + (result.win ? 'win' : result.draw ? 'draw' : 'lose');
   t.textContent = match.mode.teams ? (result.win ? 'VICTORY' : result.draw ? 'DRAW' : 'DEFEAT') : (result.place === 1 ? 'WINNER' : `#${result.place} PLACE`);
-  const p = match.player; $('results-sub').textContent = `${match.mode.name} · ${match.map.def.name.toUpperCase()} · ${p.kills} KILLS / ${p.deaths} DEATHS · BEST STREAK ${p.bestStreak}`;
+  const p = match.player, p2 = match.player2;
+  $('results-sub').textContent = p2 ? `${match.mode.name} · ${match.map.def.name.toUpperCase()} · P1 ${p.kills}/${p.deaths}${result.places ? ` (#${result.places[0]})` : ''} · P2 ${p2.kills}/${p2.deaths}${result.places ? ` (#${result.places[1]})` : ''}`
+    : `${match.mode.name} · ${match.map.def.name.toUpperCase()} · ${p.kills} KILLS / ${p.deaths} DEATHS · BEST STREAK ${p.bestStreak}`;
   $('results-board').innerHTML = renderScoreboard(match, true).innerHTML;
   $('results-bet').innerHTML = match.bet > 0 ? (payout > 0 ? `<span class="won">BET WON +$${payout}</span>` : `<span class="lost">BET LOST -$${match.bet}</span>`) + ` <span style="color:#9a9aa3;font-size:14px">BANKROLL $${wallet}</span>` : `<span style="color:#9a9aa3;font-size:14px">NO BET · BANKROLL $${wallet}</span>`;
   podium = podium || new Podium($('results-podium')); podium.show(match);
@@ -149,6 +161,7 @@ export function openControls(mobile, onClose, input = null) {
   const t = input ? input.padType : 'xbox'; const g = (n) => btn(t, n);
   const padRows = [['Move', 'Left stick'], ['Look', 'Right stick'], ['Fire', g('RT')], ['Aim down sights', g('LT')], ['Sprint', `Click ${g('LS')}`], ['Jump', g('A')], ['Duck', g('B')], ['Prone', `Double-tap ${g('B')}`], ['Slide', `${g('B')} while sprinting`], ['Reload', g('X')], ['Switch weapon', g('Y')], ['Lethal / Tactical', `${g('RB')} / ${g('LB')}`], ['Peek', `Hold ${g('RS')} (left stick picks the side)`], ['Score streaks', 'D-pad ◀ ▲ ▶'], ['Loadout (pre-game)', 'D-pad ▼'], ['Scoreboard', `Hold ${g('BACK')}`], ['Pause', g('START')], ['Menus', `D-pad or left stick, ${g('A')} select, ${g('B')} back`]];
   const tabs = [[mobile ? 'TOUCH' : 'KEYBOARD & MOUSE', mobile ? touchRows : kbRows], ['CONTROLLER', padRows]];
+  if (!mobile) tabs.push(['PLAYER 2 KEYS', P2_KEY_ROWS]); // split screen, keyboard only
   let cur = input && input.padActive ? 1 : 0;
   const render = () => {
     $('dialog-body').innerHTML = `<div class="ctl-tabs">${tabs.map((tb, i) => `<button class="ctl-tab ${i === cur ? 'on' : ''}" data-i="${i}">${tb[0]}</button>`).join('')}</div>${cur === 1 ? '<div class="ctl-note">PS5 DualSense and Xbox controllers supported. Plug in or pair, then press any button.</div>' : ''}<table class="controls-table">${tabs[cur][1].map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>`;

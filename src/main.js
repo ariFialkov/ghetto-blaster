@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import '@fontsource/anton/400.css';
 import { Engine } from './core/engine.js';
-import { Input } from './core/input.js';
+import { Input, splitAssignment } from './core/input.js';
 import { RNG, hashString, damp } from './core/rng.js';
 import { initAudio, setVolume, sfx } from './audio/sfx.js';
 import { MAPS, loadMap } from './maps/index.js';
@@ -20,7 +20,15 @@ const $ = (id) => document.getElementById(id);
 const canvas = $('gl');
 const engine = new Engine(canvas);
 const input = new Input(canvas);
+const HUD_TEMPLATE = $('hud').cloneNode(true); // pristine copy for player 2's HUD in split screen
 const hud = new HUD();
+let hud2 = null;
+/** Player 2's HUD: a copy of the HUD over the right half of the screen. */
+function makeHud2() {
+  const c = HUD_TEMPLATE.cloneNode(true); c.id = 'hud2'; c.classList.add('hidden');
+  c.querySelectorAll('#mobile-controls').forEach((e) => e.remove());
+  $('hud').parentNode.insertBefore(c, $('hud').nextSibling); return new HUD(c, false);
+}
 UI.setEngine(engine);
 const padNav = new PadNav(input);
 const save = getSave();
@@ -29,6 +37,8 @@ const params = new URLSearchParams(location.search);
 const DEBUG_TIME = params.has('t') ? Math.max(20, +params.get('t')) : 0; // ?t=60 shortens matches for testing
 const FORCE_MAP = MAPS.some((m) => m.id === params.get('map')) ? params.get('map') : null; // ?map=kowloon
 const app = { state: 'boot', mapData: null, mapId: null, match: null, cin: null, mode: null, bet: 0, pick: null, lobbyTimers: [] };
+// 2-player split screen (desktop only), remembered between sessions
+const splitOn = () => !input.mobile && !!save.split;
 if (input.mobile) document.body.classList.add('mobile');
 
 // ---------------- PWA ----------------
@@ -94,6 +104,7 @@ for (const src of MODE_ARTS) { const im = new Image(); im.src = src; } // warm t
 function enterModes() {
   app.state = 'modes'; initAudio(); sfx('ui');
   UI.showModes(MODE_ARTS, save.wallet, (mode) => enterLobby(mode));
+  if (!input.mobile) UI.playersToggle(save.split ? 2 : 1, (n) => { save.split = n === 2; persist(); sfx('click'); }, splitAssignment());
 }
 
 // ---------------- lobby ----------------
@@ -113,13 +124,17 @@ async function enterLobby(mode) {
   clearSceneMatch();
   const name = (settings.name || 'YOU').toUpperCase();
   const modeDef = DEBUG_TIME ? { ...mode, timeLimit: DEBUG_TIME } : mode;
-  app.match = new Match({ engine, input, map: mapData, mode: modeDef, settings, seed, loadout, mapId, bet: app.bet, playerName: name });
+  // split screen: who plays with what is decided now (two controllers = one each, one = player 2's, none = keyboard)
+  const split = splitOn() ? splitAssignment() : null; const input2 = input.setSplit(split);
+  app.match = new Match({ engine, input, map: mapData, mode: modeDef, settings, seed, loadout, mapId, bet: app.bet, playerName: name, split: input2 ? { input: input2 } : null });
   const m = app.match; engine.warmup();
   const total = m.actors.length; const list = m.actors.slice();
   const t = (ms, fn) => app.lobbyTimers.push(setTimeout(fn, ms));
   const t1 = 1600 + rng.int(0, 1200), t2 = t1 + 1800 + rng.int(0, 1200);
-  t(t1, () => { UI.lobbyStatus('FINDING PLAYERS'); UI.lobbySlots(mode, [m.player], total); sfx('beep', { freq: 660 }); });
-  for (let i = 1; i < total; i++) t(t1 + 250 + ((t2 - t1 - 400) * i) / total, () => { UI.lobbySlots(mode, list.slice(0, i + 1), total); sfx('click', { vol: 0.5 }); });
+  const humans = m.players.length;
+  if (m.player2) UI.lobbyStatus(`2 PLAYERS · P2 ON ${m.player2.input.label}`);
+  t(t1, () => { UI.lobbyStatus(m.player2 ? `FINDING PLAYERS · P2 ON ${m.player2.input.label}` : 'FINDING PLAYERS'); UI.lobbySlots(mode, list.slice(0, humans), total); sfx('beep', { freq: 660 }); });
+  for (let i = humans; i < total; i++) t(t1 + 250 + ((t2 - t1 - 400) * i) / total, () => { UI.lobbySlots(mode, list.slice(0, i + 1), total); sfx('click', { vol: 0.5 }); });
   t(t2 + 300, () => { UI.lobbyStatus('STARTING MATCH'); sfx('beep', { freq: 880 }); });
   t(t2 + 1300, () => startMatch());
 }
@@ -130,6 +145,8 @@ function startMatch() {
   if (app.bet > 0) { save.wallet -= app.bet; save.stats.bets++; persist(); }
   UI.hideAll();
   hud.bind(m, { onOpenLoadout: () => openLoadout(), onScoreboard: (on) => (on ? UI.showScoreboard(m, quitMatch) : UI.hideScoreboard()), onPause: () => pauseMatch() });
+  document.body.classList.toggle('split', !!m.player2);
+  if (m.player2) { hud2 = hud2 || makeHud2(); hud2.bind(m, {}, m.player2); }
   m.events.live = () => { UI.hideLoadoutSelector(); if (!input.mobile && !input.locked) input.requestLock(); };
   m.events.end = (res) => endMatch(res);
   input.setEnabled(true);
@@ -181,10 +198,11 @@ function pauseMatch() {
   };
   openPause();
 }
-function quitMatch() { document.removeEventListener('pointerlockchange', onLockChange); UI.hideScoreboard(); hud.hide(); input.setEnabled(false); enterTitle(app.mapId); }
+function leaveSplit() { if (hud2) hud2.hide(); document.body.classList.remove('split'); input.setSplit(null); }
+function quitMatch() { document.removeEventListener('pointerlockchange', onLockChange); UI.hideScoreboard(); hud.hide(); leaveSplit(); input.setEnabled(false); enterTitle(app.mapId); }
 function endMatch(res) {
   document.removeEventListener('pointerlockchange', onLockChange);
-  app.state = 'results'; input.setEnabled(false); input.releaseLock(); UI.hideScoreboard(); hud.hide();
+  app.state = 'results'; input.setEnabled(false); input.releaseLock(); UI.hideScoreboard(); hud.hide(); leaveSplit();
   const m = app.match; const p = m.player; const mode = m.mode;
   let payout = 0; const betWon = mode.teams ? res.win : res.top3;
   if (m.bet > 0 && betWon) { payout = Math.round(m.bet * mode.bet.odds); save.wallet += payout; save.stats.won += payout; }
@@ -203,7 +221,7 @@ engine.onFrame = (dt) => {
     const m = app.match; if (!m) return;
     if (app.state === 'match' && (!$('screen-dialog').classList.contains('hidden') || app.midLoadout)) { /* paused (menu or mid-match loadout): freeze */ return; }
     m.update(dt);
-    if (app.state === 'match') { hud.update(dt); if (m.state === 'pregame') UI.loadoutTimer(m.pregameT); }
+    if (app.state === 'match') { hud.update(dt); if (m.player2 && hud2) hud2.update(dt); if (m.state === 'pregame') UI.loadoutTimer(m.pregameT); }
   }
 };
 function updateCinematicLobby(dt) { const cam = engine.camera; const pts = app.match.map.cinematicPoints; const p = pts[0] || { x: 40, y: 20, z: 40, lookX: 0, lookZ: 0 }; const t = performance.now() / 1000; const r = Math.hypot(p.x - p.lookX, p.z - p.lookZ); cam.position.set(p.lookX + Math.sin(t * 0.1) * r, p.y, p.lookZ + Math.cos(t * 0.1) * r); cam.lookAt(p.lookX, 2, p.lookZ); }

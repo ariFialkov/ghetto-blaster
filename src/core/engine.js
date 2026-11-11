@@ -59,7 +59,33 @@ export class Engine {
   _resize() {
     const w = window.innerWidth, h = window.innerHeight;
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
+    if (this.views) { const a = w / this.views.length / h; for (const v of this.views) { v.camera.aspect = a; v.camera.updateProjectionMatrix(); v.vmCamera.aspect = a; v.vmCamera.updateProjectionMatrix(); } }
+    else { this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
+  }
+  // ---- split screen: several viewports side by side, each with its own world camera and view-model camera ----
+  /** Player 1's view: the main cameras plus a first-person effects layer of its own. */
+  primaryView() { if (!this._pv) { const vmFx = new THREE.Group(); this.vmScene.add(vmFx); this._pv = { camera: this.camera, vmCamera: this.vmCamera, vmFx }; } return this._pv; }
+  /** An extra view (player 2): new world + view-model cameras and a first-person effects layer. */
+  addView() {
+    const camera = new THREE.PerspectiveCamera(75, 1, 0.08, 600), vmCamera = new THREE.PerspectiveCamera(52, 1, 0.01, 8), vmFx = new THREE.Group();
+    this.vmScene.add(vmCamera); this.vmScene.add(vmFx); (this._extra || (this._extra = [])).push(vmCamera, vmFx);
+    return { camera, vmCamera, vmFx };
+  }
+  /** views: [{ camera, vmCamera, vmFx, before() }] for split screen, or null for the normal single view. */
+  setViews(views) {
+    this.views = views && views.length > 1 ? views : null;
+    if (!this.views && this._extra) { for (const o of this._extra) this.vmScene.remove(o); this._extra = null; this.vmCamera.visible = true; if (this._pv) this._pv.vmFx.visible = true; }
+    this._resize();
+  }
+  /** Draw the view-model layer for one camera on top of what's already in the viewport. */
+  _renderVM(camera, vmCamera) {
+    if (!vmCamera.children.some((c) => c.visible)) return;
+    vmCamera.position.copy(camera.position); vmCamera.quaternion.copy(camera.quaternion); vmCamera.updateMatrixWorld(true);
+    if (this.vmSunDir) { this.vmSun.position.copy(camera.position).addScaledVector(this.vmSunDir, 10); this.vmSun.target.position.copy(camera.position); this.vmSun.target.updateMatrixWorld(); }
+    const fwd = camera.getWorldDirection(this._vmTmp || (this._vmTmp = new THREE.Vector3()));
+    this.vmFill.position.copy(camera.position).addScaledVector(fwd, -2).add(camera.up); this.vmFill.target.position.copy(camera.position).addScaledVector(fwd, 1); this.vmFill.target.updateMatrixWorld();
+    this.renderer.clearDepth();
+    this.renderer.render(this.vmScene, vmCamera);
   }
   setEnvironment(env) {
     const s = this.scene;
@@ -97,7 +123,10 @@ export class Engine {
     if (this.mapLightT <= 0) {
       this.mapLightT = 0.3;
       const n = Math.min(this.maxMapLights, this.mapPool.length);
-      const ranked = defs.map((d) => ({ d, dist: Math.hypot(d.x - focus.x, d.y - focus.y, d.z - focus.z) - d.dist * 0.5 })).sort((a, b) => a.dist - b.dist).slice(0, n).map((r) => r.d);
+      // split screen: lights near either player's camera
+      const foci = this.views ? this.views.map((v) => v.camera.position) : [focus];
+      const near = (d) => Math.min(...foci.map((f) => Math.hypot(d.x - f.x, d.y - f.y, d.z - f.z)));
+      const ranked = defs.map((d) => ({ d, dist: near(d) - d.dist * 0.5 })).sort((a, b) => a.dist - b.dist).slice(0, n).map((r) => r.d);
       for (const slot of this.mapPool) if (slot.def && !ranked.includes(slot.def)) slot.target = 0; // fade out, free when dark
       for (const d of ranked) {
         if (this.mapPool.some((sl) => sl.def === d)) { const sl = this.mapPool.find((x) => x.def === d); sl.target = d.intensity * this.lightBoost; continue; }
@@ -126,6 +155,7 @@ export class Engine {
     this.fx.update(dt, this.camera);
     if (this.onFrame) this.onFrame(dt);
     this.updateMapLights(dt, this.camera.position);
+    if (this.views) { this._renderSplit(); return; }
     this._resize2();
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
@@ -138,6 +168,18 @@ export class Engine {
       this.renderer.clearDepth();
       this.renderer.render(this.vmScene, this.vmCamera);
     }
+  }
+  _renderSplit() {
+    const W = window.innerWidth, H = window.innerHeight, n = this.views.length, vw = W / n, r = this.renderer;
+    r.setScissorTest(true);
+    this.views.forEach((v, i) => {
+      r.setViewport(i * vw, 0, vw, H); r.setScissor(i * vw, 0, vw, H);
+      if (v.before) v.before();
+      for (const o of this.views) { o.vmCamera.visible = o === v; if (o.vmFx) o.vmFx.visible = o === v; } // only this player's gun and muzzle flashes
+      r.clear(); r.render(this.scene, v.camera);
+      this._renderVM(v.camera, v.vmCamera);
+    });
+    r.setScissorTest(false); r.setViewport(0, 0, W, H);
   }
   _resize2() { if (this.vmCamera.aspect !== this.camera.aspect) { this.vmCamera.aspect = this.camera.aspect; this.vmCamera.updateProjectionMatrix(); } }
 }
@@ -207,7 +249,7 @@ export class FX {
   muzzle(pos, dir, profile = 'ar', opts = {}) {
     if (profile === true) profile = 'shotgun'; if (profile === false) profile = 'ar';
     const P = MUZZLE_PROFILES[profile] || MUZZLE_PROFILES.ar;
-    const parent = opts.firstPerson && this.vmScene ? this.vmScene : this.group;
+    const parent = opts.firstPerson && this.vmScene ? opts.vmGroup || this.vmScene : this.group;
     const g = new THREE.Group(); g.position.copy(pos); g.lookAt(pos.clone().add(dir)); g.rotateZ(Math.random() * Math.PI * 2);
     const life = P.life * (0.85 + Math.random() * 0.3);
     const items = [];

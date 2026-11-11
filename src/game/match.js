@@ -19,12 +19,13 @@ const NO_LETHAL = { id: 'none', name: 'NONE', count: 0, passive: false };
 const SENTRY = { ...WEAPONS.ratchet, id: 'sentry', name: 'SENTRY', mag: 9999, reserve: 0, speedMult: 0 };
 
 export class Match {
-  constructor({ engine, input, map, mode, settings, seed, loadout, mapId, cinematic = false, bet = 0, playerName = 'YOU' }) {
+  constructor({ engine, input, map, mode, settings, seed, loadout, mapId, cinematic = false, bet = 0, playerName = 'YOU', split = null }) {
     this.engine = engine; this.scene = engine.scene; this.camera = engine.camera; this.fx = engine.fx; this.input = input;
     this.map = map; this.mode = mode; this.settings = settings; this.mapId = mapId; this.cinematic = cinematic; this.bet = bet;
     this.seed = seed; this.rng = new RNG(seed ^ 0x9e3779b9);
     this.scene.add(map.group); map.group.traverse((o) => { if (o.userData.kit) o.visible = engine.quality !== 'low'; }); // playset window surrounds: off on low quality
-    this.actors = []; this.bots = []; this.player = null; this.crew = [];
+    this.actors = []; this.bots = []; this.player = null; this.player2 = null; this.players = []; this.crew = [];
+    this.split = !!split && !cinematic; this.input2 = split ? split.input : null; this.listeners = {};
     this.time = 0; this.elapsed = 0; this.state = 'pregame'; this.pregameT = cinematic ? 0 : 7; this.frozen = !cinematic;
     this.teamScore = [0, 0]; this.feed = []; this.events = {};
     this.projectiles = new Projectiles(this);
@@ -47,13 +48,22 @@ export class Match {
       const pTeam = mode.teams ? rng.int(0, 1) : null;
       this.playerTeam = pTeam;
       this.player = new Player(this, { name: this.playerName, team: pTeam, faction: 'gang', loadout: resolveLoadout(loadout), rng: new RNG(this.seed + 1), accent: null, plastic: FFA_COLORS[0] });
-      this.actors.push(this.player);
+      this.actors.push(this.player); this.players.push(this.player);
+      if (this.split) {
+        // split screen: player 2 takes a slot (your crew in team deathmatch), with its own camera, view model and input
+        const v1 = this.engine.primaryView ? this.engine.primaryView() : null, v2 = this.engine.addView ? this.engine.addView() : null;
+        if (v1) { this.player.vmFx = v1.vmFx; }
+        this.player2 = new Player(this, { name: 'PLAYER 2', team: pTeam, faction: 'gang', loadout: resolveLoadout(loadout), rng: new RNG(this.seed + 2), accent: null, plastic: FFA_COLORS[1], slot: 2,
+          input: this.input2, camera: v2 ? v2.camera : new THREE.PerspectiveCamera(75, 1, 0.08, 600), vmCamera: v2 ? v2.vmCamera : new THREE.PerspectiveCamera(52, 1, 0.01, 8), vmFx: v2 ? v2.vmFx : null });
+        this.actors.push(this.player2); this.players.push(this.player2);
+        if (this.engine.setViews && v1 && v2) this.engine.setViews([this._viewFor(this.player, v1), this._viewFor(this.player2, v2)]);
+      }
     }
-    const botCount = this.cinematic ? n : n - 1;
+    const botCount = this.cinematic ? n : n - this.players.length;
     for (let i = 0; i < botCount; i++) {
       let team = null;
       if (mode.teams) { const counts = [0, 0]; for (const a of this.actors) if (a.team !== null) counts[a.team]++; team = counts[0] <= counts[1] ? 0 : 1; if (counts[0] >= teamSize) team = 1; if (counts[1] >= teamSize) team = 0; }
-      const b = new Bot(this, { name: names[i], team, faction: rng.pick(FACTIONS), loadout: resolveLoadout(randomLoadout(rng)), rng: new RNG(this.seed + 100 + i), skill: rng.float(0.3, 0.95), plastic: FFA_COLORS[(i + (this.cinematic ? 0 : 1)) % FFA_COLORS.length] });
+      const b = new Bot(this, { name: names[i], team, faction: rng.pick(FACTIONS), loadout: resolveLoadout(randomLoadout(rng)), rng: new RNG(this.seed + 100 + i), skill: rng.float(0.3, 0.95), plastic: FFA_COLORS[(i + (this.cinematic ? 0 : this.players.length)) % FFA_COLORS.length] });
       b.level = rng.int(3, 120); b.ping = rng.int(18, 95);
       this.actors.push(b); this.bots.push(b);
     }
@@ -63,7 +73,11 @@ export class Match {
     }
     // initial spawns
     for (const a of this.actors) this.spawnActor(a, true);
-    if (this.player) this.player.frozen = true;
+    for (const h of this.players) h.frozen = true;
+  }
+  /** A split-screen viewport: before drawing it, the viewer's own body hides (while alive) and the other player shows. */
+  _viewFor(viewer, v) {
+    return { ...v, before: () => { for (const h of this.players) h.model.group.visible = h === viewer ? !h.alive : !h.hidden; } };
   }
   /** Display crew for a team: the player's side always wears blue (0), the enemy red (1). */
   crewOf(team) { return team === null || team === undefined ? null : this.playerTeam === null || this.playerTeam === undefined ? team : team === this.playerTeam ? 0 : 1; }
@@ -119,18 +133,21 @@ export class Match {
       credit.addScore(100 + (part === 'head' ? 25 : 0), 'kill');
       if (this.mode.teams && credit.team !== null) this.teamScore[credit.team]++;
       // assists
-      for (const [a, dmg] of victim.damageTakenFrom) if (a !== credit && a.alive !== undefined && dmg >= 20 && !this.sameTeam(a, victim)) { a.assists++; a.addScore(25, 'assist'); if (a.isPlayer) this.emit('assist', { victim }); }
-      if (this.mode.id === 'gungame' && !killer?.owner) { credit.gunGameIndex++; if (credit.gunGameIndex < this.mode.gunCount) { credit.setSingleWeapon(WEAPONS[GUN_GAME_ORDER[credit.gunGameIndex]]); if (credit.isPlayer) this.message(`NEXT GUN: ${WEAPONS[GUN_GAME_ORDER[credit.gunGameIndex]].name}`, 1.4); } }
-      if (credit.isPlayer) { this.emit('kill', { victim, part }); if (credit.killStreak === 3) this.message('TRIPLE KILL', 1.5); else if (credit.killStreak === 5) this.message('ON A RAMPAGE', 1.5); else if (credit.killStreak === 10) this.message('UNSTOPPABLE', 1.8); }
+      for (const [a, dmg] of victim.damageTakenFrom) if (a !== credit && a.alive !== undefined && dmg >= 20 && !this.sameTeam(a, victim)) { a.assists++; a.addScore(25, 'assist'); if (a.isPlayer) this.emit('assist', { victim, by: a }); }
+      if (this.mode.id === 'gungame' && !killer?.owner) { credit.gunGameIndex++; if (credit.gunGameIndex < this.mode.gunCount) { credit.setSingleWeapon(WEAPONS[GUN_GAME_ORDER[credit.gunGameIndex]]); if (credit.isPlayer) this.message(`NEXT GUN: ${WEAPONS[GUN_GAME_ORDER[credit.gunGameIndex]].name}`, 1.4, credit); } }
+      if (credit.isPlayer) { this.emit('kill', { victim, part, by: credit }); if (credit.killStreak === 3) this.message('TRIPLE KILL', 1.5, credit); else if (credit.killStreak === 5) this.message('ON A RAMPAGE', 1.5, credit); else if (credit.killStreak === 10) this.message('UNSTOPPABLE', 1.8, credit); }
     }
-    if (victim.isPlayer) { this.emit('death', { killer: credit, weaponName }); }
+    if (victim.isPlayer) { this.emit('death', { killer: credit, weaponName, victim }); }
     this.feed.unshift({ k: credit && credit !== victim ? credit : null, v: victim, w: weaponName, t: 6, head: part === 'head' });
     if (this.feed.length > 6) this.feed.pop();
     if (victim.isCrew) { victim.despawnT = 0.1; }
     this.checkEnd();
   }
-  message(text, dur = 1.5) { this.emit('message', { text, dur }); }
-  emit(name, data) { const h = this.events[name]; if (h) h(data); }
+  /** HUD message; `who` limits it to one player's screen in split screen. */
+  message(text, dur = 1.5, who = null) { this.emit('message', { text, dur, who }); }
+  emit(name, data) { const h = this.events[name]; if (h) h(data); const L = this.listeners[name]; if (L) for (const f of L) f(data); }
+  /** Extra event listeners (each split-screen HUD listens for its own player's events). Returns an unsubscribe. */
+  on(name, fn) { (this.listeners[name] || (this.listeners[name] = [])).push(fn); return () => { const L = this.listeners[name]; const i = L.indexOf(fn); if (i >= 0) L.splice(i, 1); }; }
   // ---------------- equipment & streaks ----------------
   throwEquipment(actor, kind, targetPos = null) {
     const e = actor.equip[kind]; if (!actor.alive || e.count <= 0 || this.frozen) return;
@@ -144,9 +161,9 @@ export class Match {
     return m;
   }
   useStreak(player, slot) {
-    const s = this.streakState; const def = s.picks[slot]; if (!def || s.used[slot] || !player.alive || this.frozen) return;
+    const s = player.streakState || this.streakState; const def = s.picks[slot]; if (!def || s.used[slot] || !player.alive || this.frozen) return;
     if (player.streakScore < def.cost) return;
-    s.used[slot] = true; if (player.view && player.view.act) player.view.act('call'); this.applyStreak(def, player); sfx('streak'); this.emit('streak', { def }); this.message(def.name, 1.6);
+    s.used[slot] = true; if (player.view && player.view.act) player.view.act('call'); this.applyStreak(def, player); sfx('streak'); this.emit('streak', { def, by: player }); this.message(def.name, 1.6, player);
   }
   applyStreak(def, p) {
     const P = def.params || {}; const enemies = () => this.enemiesOf(p).filter((e) => e.alive);
@@ -219,18 +236,20 @@ export class Match {
   }
   // ---------------- update ----------------
   update(dt) {
-    if (this.ended) { for (const a of this.actors) { if (a.isPlayer) a.update(dt, this.input.poll()); else a.update(dt); } this.fx && this.cleanFeed(dt); return; }
+    if (this.ended) { for (const a of this.actors) { if (a.isPlayer) a.update(dt, a === this.player2 ? this.input2.poll() : this.input.poll()); else a.update(dt); } this.fx && this.cleanFeed(dt); return; }
     this.time += dt;
     if (this.state === 'pregame') { this.pregameT -= dt; if (this.pregameT <= 0) this.goLive(); }
     else if (this.state === 'live') { this.elapsed += dt; if (this.elapsed >= this.mode.timeLimit) { this.elapsed = this.mode.timeLimit; this.director.update(dt); this.endMatch(); return; } }
-    const inp = this.input.poll();
-    if (this.player) {
-      this.player.update(dt, inp);
+    for (const h of this.players) {
+      const inp = h === this.player2 ? this.input2.poll() : this.input.poll();
+      h.update(dt, inp);
       if (inp.pressed.has('score')) this.emit('scoreboard', true); if (inp.pressed.has('scoreUp')) this.emit('scoreboard', false);
-      if (inp.pressed.has('loadout') && this.state === 'pregame') this.emit('openLoadout');
-      if (inp.pressed.has('esc')) this.emit('pause');
-      if (!this.player.alive) { this.player.respawnT -= dt; if (this.player.respawnT <= 0 && this.state === 'live') { this.spawnActor(this.player); this.emit('respawn'); } }
+      if (h === this.player && inp.pressed.has('loadout') && this.state === 'pregame') this.emit('openLoadout');
+      if (inp.pressed.has('esc')) this.emit('pause'); // either player can pause
+      if (!h.alive) { h.respawnT -= dt; if (h.respawnT <= 0 && this.state === 'live') { this.spawnActor(h); this.emit('respawn', { who: h }); } }
     }
+    // split screen: the sun's shadow box follows the midpoint of the two players
+    if (this.split && this.engine.updateSunTarget) { _v.addVectors(this.player.pos, this.player2.pos).multiplyScalar(0.5); this.engine.updateSunTarget(_v); }
     for (const b of this.bots) {
       b.update(dt);
       if (!b.alive && !b.isCrew) { b.respawnT -= dt; if (b.respawnT <= 0 && this.state === 'live') this.spawnActor(b); }
@@ -246,15 +265,21 @@ export class Match {
   }
   cleanFeed(dt) { for (let i = this.feed.length - 1; i >= 0; i--) { this.feed[i].t -= dt; if (this.feed[i].t <= 0) this.feed.splice(i, 1); } }
   removeActor(b) { const i = this.actors.indexOf(b); if (i >= 0) this.actors.splice(i, 1); const j = this.bots.indexOf(b); if (j >= 0) this.bots.splice(j, 1); const k = this.crew.indexOf(b); if (k >= 0) this.crew.splice(k, 1); b.dispose(); }
-  goLive() { this.state = 'live'; this.frozen = false; if (this.player) this.player.frozen = false; this.emit('live'); this.message('GO', 1.0); }
+  goLive() {
+    this.state = 'live'; this.frozen = false; for (const h of this.players) h.frozen = false;
+    // player 2 goes in with player 1's loadout and streak picks (gun game: everyone starts with the same pistol anyway)
+    const p2 = this.player2;
+    if (p2) { if (this.mode.id !== 'gungame' && p2.loadout !== this.player.loadout) p2.setLoadout(this.player.loadout); p2.streakState = { active: [], picks: this.streakState.picks.slice(), used: [false, false, false], dirty: true }; }
+    this.emit('live'); this.message('GO', 1.0);
+  }
   updateRadar(dt) {
     const r = this.radar; if (r.t > 0) r.t -= dt; if (r.jam > 0) r.jam -= dt; if (r.intel > 0) { r.intel -= dt; r.intelT -= dt; if (r.intelT <= 0) { r.intelT = 2; const e = this.enemiesOf(this.player).filter((x) => x.alive).sort((a, b) => a.pos.distanceTo(this.player.pos) - b.pos.distanceTo(this.player.pos))[0]; if (e) r.pings.push({ pos: e.pos.clone(), t: 1.8, intel: true }); } }
     if (r.sweep) { r.sweepT -= dt; if (r.sweepT <= 0) { r.sweepT = 3.5; for (const e of this.enemiesOf(this.player)) if (e.alive) r.pings.push({ pos: e.pos.clone(), t: 1.5 }); } }
     for (let i = r.pings.length - 1; i >= 0; i--) { r.pings[i].t -= dt; if (r.pings[i].t <= 0) r.pings.splice(i, 1); }
     if (this.emp > 0) this.emp -= dt;
-    if (this.quakeT > 0) { this.quakeT -= dt; if (this.player) this.player.camShake = 0.6; }
+    if (this.quakeT > 0) { this.quakeT -= dt; for (const h of this.players) h.camShake = 0.6; }
     // heartbeat sensor
-    if (this.player && this.player.alive && this.player.equip.tactical.def.id === 'heartbeat') { r.hbT = (r.hbT || 0) - dt; if (r.hbT <= 0) { r.hbT = 1.6; for (const e of this.enemiesOf(this.player)) if (e.alive && e.pos.distanceTo(this.player.pos) < 30) r.pings.push({ pos: e.pos.clone(), t: 1.0, hb: true }); } }
+    for (const hp of this.players) { if (hp.alive && hp.equip.tactical.def.id === 'heartbeat') { hp.hbT = (hp.hbT || 0) - dt; if (hp.hbT <= 0) { hp.hbT = 1.6; for (const e of this.enemiesOf(hp)) if (e.alive && e.pos.distanceTo(hp.pos) < 30) r.pings.push({ pos: e.pos.clone(), t: 1.0, hb: true }); } } }
   }
   updateStreakEffects(dt) {
     const p = this.player;
@@ -264,7 +289,7 @@ export class Match {
     for (let i = this.cars.length - 1; i >= 0; i--) { const c = this.cars[i]; c.t += dt; const k = c.t / c.dur; c.pos.lerpVectors(c.pos, c.end, Math.min(1, dt * 1.2)); c.pos.addScaledVector(c.dir, dt * 16); c.mesh.position.copy(c.pos).setY(0); c.mesh.rotation.y = Math.atan2(c.dir.x, c.dir.z); c.shotT -= dt;
       for (const e of this.enemiesOf(c.owner)) { if (!e.alive) continue; const d = e.pos.distanceTo(c.pos); if (d < 2.2) { e.takeDamage(1000, c.owner, 'body', e.chest(new THREE.Vector3())); this.fx.blood(e.chest(new THREE.Vector3()), e.model.plastic); } else if (d < 16 && c.shotT <= 0 && this.map.world.los(c.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), e.chest(new THREE.Vector3()))) { c.shotT = 0.12; const from = c.pos.clone().add(new THREE.Vector3(0, 1.2, 0)); this.fx.tracer(from, e.chest(new THREE.Vector3())); this.fx.muzzle(from, c.dir, 'smg'); sfx('shot', { kind: 'smg', vol: 0.7 }); e.takeDamage(c.heavy ? 40 : 26, c.owner, 'body'); } }
       if (k >= 1) { this.scene.remove(c.mesh); this.cars.splice(i, 1); } }
-    if (this.heli) { const h = this.heli; h.t -= dt; h.ang += dt * 0.35; h.rotor.rotation.y += dt * 30; const center = this.player ? this.player.pos : new THREE.Vector3(); h.mesh.position.set(center.x + Math.cos(h.ang) * 28, 32, center.z + Math.sin(h.ang) * 28); h.mesh.rotation.y = -h.ang; h.mesh.rotation.z = 0.15; this.fx.spot.position.copy(h.mesh.position); this.fx.spot.target.position.set(center.x, 0, center.z); this.fx.spot.target.updateMatrixWorld(); h.soundT -= dt; if (h.soundT <= 0) { h.soundT = 4; sfx('heli', { vol: 0.5 }); }
+    if (this.heli) { const h = this.heli; h.t -= dt; h.ang += dt * 0.35; h.rotor.rotation.y += dt * 30; const center = h.owner && h.owner.pos ? h.owner.pos : this.player ? this.player.pos : new THREE.Vector3(); h.mesh.position.set(center.x + Math.cos(h.ang) * 28, 32, center.z + Math.sin(h.ang) * 28); h.mesh.rotation.y = -h.ang; h.mesh.rotation.z = 0.15; this.fx.spot.position.copy(h.mesh.position); this.fx.spot.target.position.set(center.x, 0, center.z); this.fx.spot.target.updateMatrixWorld(); h.soundT -= dt; if (h.soundT <= 0) { h.soundT = 4; sfx('heli', { vol: 0.5 }); }
       h.shotT -= dt; if (h.shotT <= 0) { h.shotT = 0.45; const es = this.enemiesOf(h.owner).filter((e) => e.alive && this.map.world.los(h.mesh.position, e.chest(new THREE.Vector3()))); if (es.length) { const e = this.rng.pick(es); const c = e.chest(new THREE.Vector3()).add(new THREE.Vector3(this.rng.float(-0.6, 0.6), 0, this.rng.float(-0.6, 0.6))); this.fx.tracer(h.mesh.position.clone(), c); sfx('shot', { kind: 'lmg', vol: 0.6 }); if (this.rng.chance(0.75)) { e.takeDamage(34, h.owner, 'body', c); this.fx.blood(c, e.model.plastic); } else this.fx.impact(c.clone().setY(0.05), new THREE.Vector3(0, 1, 0)); } }
       if (h.t <= 0) { this.scene.remove(h.mesh); this.heli = null; this.fx.spot.intensity = 0; } }
   }
@@ -280,20 +305,24 @@ export class Match {
   }
   ranking() { return this.actors.filter((a) => !a.isCrew).slice().sort((a, b) => this.mode.teams ? (b.score - a.score || b.kills - a.kills) : this.director.rankSort(a, b)); }
   endMatch() {
-    if (this.ended) return; this.ended = true; this.state = 'ended'; this.frozen = true; if (this.player) { this.player.frozen = true; this.player.ads = false; }
+    if (this.ended) return; this.ended = true; this.state = 'ended'; this.frozen = true; for (const h of this.players) { h.frozen = true; h.ads = false; }
     const rank = this.ranking(); const p = this.player;
     let result;
-    if (this.mode.teams) { const win = this.teamScore[p.team] > this.teamScore[1 - p.team]; const draw = this.teamScore[p.team] === this.teamScore[1 - p.team]; result = { win, draw, place: rank.indexOf(p) + 1, teamScore: this.teamScore.slice(), plan: this.director.plan.playerWins }; }
-    else { const place = rank.indexOf(p) + 1; result = { win: place === 1, draw: false, place, top3: place <= 3, plan: this.director.plan.placement }; }
+    // split screen: the result (and the bet) is the better of the two players — your crew in TDM, the best placing in FFA
+    const places = this.players.map((h) => rank.indexOf(h) + 1);
+    if (this.mode.teams) { const win = this.teamScore[p.team] > this.teamScore[1 - p.team]; const draw = this.teamScore[p.team] === this.teamScore[1 - p.team]; result = { win, draw, place: Math.min(...places), places, teamScore: this.teamScore.slice(), plan: this.director.plan.playerWins }; }
+    else { const place = Math.min(...places); result = { win: place === 1, draw: false, place, places, top3: place <= 3, plan: this.director.plan.placement }; }
     this.endResult = { ...result, rank, mode: this.mode, bet: this.bet, log: this.director.log };
     this.emit('end', this.endResult);
   }
-  dispose() { if (this.player && this.player.view) this.engine.vmCamera.remove(this.player.view.root); for (const a of this.actors) a.dispose(); this.projectiles.clear(); this.fx.clear(); for (const c of this.cars) this.scene.remove(c.mesh); if (this.heli) this.scene.remove(this.heli.mesh); this.scene.remove(this.map.group); }
+  dispose() { for (const h of this.players) if (h.view) { h.vmCamera.remove(h.view.root); if (h.view.freeRig) h.vmCamera.remove(h.view.freeRig); } if (this.split && this.engine.setViews) this.engine.setViews(null); for (const a of this.actors) a.dispose(); this.projectiles.clear(); this.fx.clear(); for (const c of this.cars) this.scene.remove(c.mesh); if (this.heli) this.scene.remove(this.heli.mesh); this.scene.remove(this.map.group); }
   // ---------------- audio ----------------
   audio(name, actor, pos, opts = {}) {
     if (name === 'none') return;
-    const listener = this.camera; const src = pos || (actor ? actor.pos : null);
+    const src = pos || (actor ? actor.pos : null);
     if (!src) { sfx(name, opts); return; }
+    // split screen: heard from whichever player is nearer
+    let listener = this.camera; if (this.player2 && this.player2.camera.position.distanceToSquared(src) < listener.position.distanceToSquared(src)) listener = this.player2.camera;
     _v.subVectors(src, listener.position); const dist = _v.length();
     if (dist > 90) return;
     listener.getWorldDirection(_r); const right = new THREE.Vector3().crossVectors(_r, new THREE.Vector3(0, 1, 0)).normalize();
