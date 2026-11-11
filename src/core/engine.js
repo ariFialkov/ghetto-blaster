@@ -65,8 +65,8 @@ export class Engine {
     const s = this.scene;
     // clear old lights
     for (const o of [...s.children]) if ((o.isLight || o.userData.env) && !o.userData.keep) s.remove(o);
-    // toy reskin: maps are dioramas on a table, so the backdrop is the (blurred) room instead of open sky
-    s.background = env.room === false ? skyGradient(env.skyTop, env.skyHorizon, env.skyBottom) : roomPanorama(env);
+    // each map's own sky and fog (the reskin's blurred-room backdrop is opt-in per map with env.room: true)
+    s.background = env.room === true ? roomPanorama(env) : skyGradient(env.skyTop, env.skyHorizon, env.skyBottom);
     s.fog = new THREE.Fog(s.background.userData.wall ? s.background.userData.wall.clone() : new THREE.Color(env.fogColor), env.fogNear, env.fogFar);
     // Global brightness pass: stronger sky/ground fill so anything in shadow stays readable, brighter ambient,
     // higher exposure. Maps keep their own colours and mood; only the floor of the lighting is raised.
@@ -151,7 +151,7 @@ export class FX {
     this.particleTex = tex('particle'); this.muzzleTex = tex('muzzle');
     // muzzle flash layer materials (shared base, cloned per flash so opacity animates independently; same shader program)
     const add = (map, color) => new THREE.MeshBasicMaterial({ map, color, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
-    this.mfMat = { core: new THREE.SpriteMaterial({ map: tex('flashCore'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), tongue: add(tex('flashTongue'), 0xffffff), ring: add(tex('flashRing'), 0xffffff), smoke: new THREE.SpriteMaterial({ map: tex('smokePuff'), transparent: true, depthWrite: false, fog: true, color: 0xdedad2 }) };
+    this.mfMat = { core: new THREE.SpriteMaterial({ map: tex('flashCore'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), tongue: add(tex('flashTongue'), 0xffffff), ring: add(tex('flashRing'), 0xffffff), smoke: new THREE.SpriteMaterial({ map: tex('smokePuff'), transparent: true, depthWrite: false, fog: true, color: 0x9a9aa0 }) };
     const tg = new THREE.PlaneGeometry(1, 1); tg.translate(0, 0.5, 0); tg.rotateX(Math.PI / 2); this.tongueGeo = tg; // extends along +Z from the origin
     const rg = new THREE.PlaneGeometry(1, 1); this.ringGeo = rg; // faces +Z (perpendicular to the barrel)
     this.vmScene = null;
@@ -221,8 +221,9 @@ export class FX {
     if (P.ring > 0) { const m = new THREE.Mesh(this.ringGeo, this.mfMat.ring.clone()); m.position.z = P.length * 0.35; m.scale.setScalar(P.ring * 0.3); g.add(m); items.push({ obj: m, kind: 'ring', base: P.ring }); }
     parent.add(g);
     this.items.push({ obj: g, life, maxLife: life, kind: 'muzzle', parts: items, parent });
-    // smoke puff drifting from the muzzle
-    if (P.smoke > 0) { const sp = new THREE.Sprite(this.mfMat.smoke.clone()); sp.material.opacity = 0; sp.position.copy(pos).addScaledVector(dir, P.length * 0.5); sp.scale.setScalar(P.smoke * 0.5); sp.material.rotation = Math.random() * 6; this.group.add(sp); this.items.push({ obj: sp, life: 0.9, maxLife: 0.9, kind: 'smokepuff', vel: dir.clone().multiplyScalar(0.8).add(new THREE.Vector3(0, 0.5, 0)), grow: P.smoke * 0.8, peak: Math.min(0.85, P.smokeAlpha * 2.6) }); } // paper-cap puff: denser, a touch smaller
+    // smoke puff drifting from the muzzle. Your own shots get a faint, short wisp that rises out of the sight line,
+    // so rapid fire never fogs the target; everyone else's guns keep the fuller puff.
+    if (P.smoke > 0) { const fp = !!opts.firstPerson, life = fp ? 0.45 : 0.9; const sp = new THREE.Sprite(this.mfMat.smoke.clone()); sp.material.opacity = 0; sp.position.copy(pos).addScaledVector(dir, P.length * (fp ? 0.25 : 0.5)); sp.scale.setScalar(P.smoke * 0.5); sp.material.rotation = Math.random() * 6; this.group.add(sp); this.items.push({ obj: sp, life, maxLife: life, kind: 'smokepuff', vel: fp ? dir.clone().multiplyScalar(0.3).add(new THREE.Vector3(0, 1.4, 0)) : dir.clone().multiplyScalar(0.8).add(new THREE.Vector3(0, 0.5, 0)), grow: P.smoke * (fp ? 0.55 : 1), peak: P.smokeAlpha * (fp ? 0.3 : 1) }); }
     // sparks
     for (let i = 0; i < P.sparks; i++) { const v = dir.clone().multiplyScalar(6 + Math.random() * 10).add(new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4)); this._spawn(pos, v, 0.12 + Math.random() * 0.2, 0.35, new THREE.Color(1, 0.75, 0.3), 6, 3); }
     // light

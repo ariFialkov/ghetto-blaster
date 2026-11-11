@@ -93,7 +93,7 @@ export class MapBuilder {
     if (this.def.perimeter !== false) {
       const pm = mat('concrete', { color: this.def.perimeterColor || '#7d7a72', seed: 77 }); const e = s - 0.6;
       for (const [x, z, len, rot] of [[0, -e, this.size, 0], [0, e, this.size, 0], [-e, 0, this.size, Math.PI / 2], [e, 0, this.size, Math.PI / 2]]) {
-        const diorama = this.def.diorama !== false; // toy reskin: a low kerb so the table and room beyond stay visible
+        const diorama = this.def.diorama === true; // opt-in toy diorama: a low kerb so the table and room beyond stay visible
         this.box({ x, z, w: len, h: diorama ? 1.1 : 3.2, d: 0.5, m: pm, rot, repeat: [len / 3, diorama ? 0.35 : 1], collide: false });
         if (!diorama) for (let i = -3; i <= 3; i++) { const t = i * (this.size / 7.5); const px = rot ? x : x + t, pz = rot ? z + t : z; this.graffitiDecal(px, pz, 6, 0.5, rot, this.rng.pick(['GB', 'HOOD', 'RIP', 'KING', 'OPPS', '187', 'BLAST', 'NO SNITCH']), this.rng, rot ? (x < 0 ? 0 : 2) : (z < 0 ? 0 : 2)); }
       }
@@ -368,7 +368,7 @@ export class MapBuilder {
   // ---------------- finish ----------------
   /** Ring of distant buildings outside the playable area so the horizon is never empty. */
   _skyline() {
-    if (this.def.diorama !== false) return this._diorama();
+    if (this.def.diorama === true) return this._diorama();
     if (this.def.skyline === false) return;
     const rng = new RNG((this.def.seed || 7) + 999); const s = this.size / 2; const night = this.def.env && this.def.env.sunIntensity < 1;
     const lit = night ? 0.6 : 0.15;

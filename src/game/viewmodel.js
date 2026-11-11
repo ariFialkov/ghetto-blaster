@@ -89,6 +89,27 @@ export class ViewModel {
     const z = f.fore[0] + (f.fore[1] - f.fore[0]) * 0.35; const under = this._underside(z);
     H({ pos: V(0.004, (under !== null ? under : f.fore[2]) + 0.024, z), rx: -Math.PI / 2, rz: 0.15, armDir: V(0.95, -0.55, -0.75), thumbSide: -1 });
   }
+  /**
+   * ADS height (camera space y of the gun origin), from the gun's own mesh: the highest the gun can ride while every
+   * part of it near the screen centre (sights, optic, rail, drum) stays at least ~1.4 deg below the crosshair, so
+   * the point the bullets hit is never covered. Cached per weapon and ADS depth.
+   */
+  _adsY(adsZ) {
+    const key = this.weapon.id + ':' + adsZ; if (this._adsKey === key) return this._adsYv;
+    const M = 0.025, CONE = 0.12, g = this.gun, v = new THREE.Vector3(), rel = new THREE.Matrix4(), inv = new THREE.Matrix4();
+    g.updateMatrixWorld(true); inv.copy(g.matrixWorld).invert();
+    let need = -Infinity;
+    g.traverse((o) => {
+      if (!o.isMesh || !o.geometry.attributes.position) return;
+      rel.multiplyMatrices(inv, o.matrixWorld); const pa = o.geometry.attributes.position;
+      for (let i = 0; i < pa.count; i++) {
+        v.fromBufferAttribute(pa, i).applyMatrix4(rel); // gun space: +z to the muzzle; the holder turns it to face -z
+        const dist = v.z - adsZ; if (dist < 0.05 || Math.abs(v.x) / dist > CONE) continue;
+        need = Math.max(need, v.y + M * dist);
+      }
+    });
+    this._adsKey = key; this._adsYv = need > -Infinity ? -need : null; return this._adsYv;
+  }
   /** Lowest surface of the gun mesh at gun-space depth z (null if the ray misses). */
   _underside(z) {
     const H = this.gunHolder; H.updateMatrixWorld(true);
@@ -121,7 +142,9 @@ export class ViewModel {
     const fit = this.gun.userData.fit;
     const sightY = fit ? fit.sight : d.pistol ? h2(d) * 0.6 + 0.015 : (d.scope ? h2(d) + 0.035 + d.scope * 0 : h2(d) + 0.015);
     const hipPos = fit && d.pistol ? new THREE.Vector3(0.15, -0.17, -0.34) : new THREE.Vector3(0.17, -0.19 - (d.pistol ? 0.02 : 0), -0.36 - (d.pistol ? 0 : 0.05));
-    const adsPos = new THREE.Vector3(0, -sightY, -0.28 - (d.pistol ? 0 : 0.08));
+    const adsZ = -0.28 - (d.pistol ? 0 : 0.08);
+    const fitY = this._adsY(adsZ);
+    const adsPos = new THREE.Vector3(0, fitY !== null ? Math.min(-sightY, fitY) : -sightY, adsZ);
     const pos = hipPos.lerp(adsPos, ads);
     const rot = new THREE.Vector3(0, 0, 0);
     // sprint: lower and angle the gun

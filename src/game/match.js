@@ -45,6 +45,7 @@ export class Match {
     const names = pickNames(rng, n);
     if (!this.cinematic) {
       const pTeam = mode.teams ? rng.int(0, 1) : null;
+      this.playerTeam = pTeam;
       this.player = new Player(this, { name: this.playerName, team: pTeam, faction: 'gang', loadout: resolveLoadout(loadout), rng: new RNG(this.seed + 1), accent: null, plastic: FFA_COLORS[0] });
       this.actors.push(this.player);
     }
@@ -64,6 +65,8 @@ export class Match {
     for (const a of this.actors) this.spawnActor(a, true);
     if (this.player) this.player.frozen = true;
   }
+  /** Display crew for a team: the player's side always wears blue (0), the enemy red (1). */
+  crewOf(team) { return team === null || team === undefined ? null : this.playerTeam === null || this.playerTeam === undefined ? team : team === this.playerTeam ? 0 : 1; }
   sameTeam(a, b) {
     if (a === b) return true;
     if (this.mode.teams) return a.team === b.team;

@@ -50,10 +50,11 @@ export function showLobby(mode, mapDef, wallet, onBet) {
 export function lobbyStatus(text) { $('lobby-status').textContent = text; }
 export function lobbySlots(mode, players, total) {
   const slots = $('lobby-slots'); slots.innerHTML = '';
+  const mine = (players.find((x) => x && x.isPlayer) || {}).team; const crew = (t) => (mine === null || mine === undefined ? t : t === mine ? 0 : 1); // your side is always blue
   for (let i = 0; i < total; i++) {
     const p = players[i]; const d = document.createElement('div');
     if (!p) { d.className = 'lobby-slot empty'; d.textContent = 'searching...'; }
-    else { d.className = `lobby-slot ${mode.teams ? 't' + p.team : ''} ${p.isPlayer ? 'you' : ''}`; d.innerHTML = `<span>${p.name}</span><span class="lvl">LVL ${p.level ?? '-'}</span><span class="ping">${p.ping ?? 0}ms</span>`; }
+    else { d.className = `lobby-slot ${mode.teams ? 't' + crew(p.team) : ''} ${p.isPlayer ? 'you' : ''}`; d.innerHTML = `<span>${p.name}</span><span class="lvl">LVL ${p.level ?? '-'}</span><span class="ping">${p.ping ?? 0}ms</span>`; }
     slots.appendChild(d);
   }
 }
@@ -117,7 +118,7 @@ export function renderScoreboard(match, final = false) {
   const head = `<tr><th>#</th><th>PLAYER</th><th>SCORE</th><th>${m.mode.id === 'gungame' ? 'GUN' : 'KILLS'}</th><th>DEATHS</th><th>ASSISTS</th></tr>`;
   const rank = m.ranking();
   let html = `<div class="sb-title"><span>${m.mode.name} — ${m.map.def.name.toUpperCase()}</span><span>${final ? 'FINAL' : ''}</span></div>`;
-  if (m.mode.teams) html += `<div class="sb-teams">${[0, 1].map((t) => `<div class="sb-team t${t}"><h3>${t === 0 ? 'BLUE CREW' : 'RED CREW'} — ${m.teamScore[t]}</h3><table class="sb">${head}${rank.filter((a) => a.team === t).map(row).join('')}</table></div>`).join('')}</div>`;
+  if (m.mode.teams) html += `<div class="sb-teams">${[0, 1].map((c) => { const t = p ? (c === 0 ? p.team : 1 - p.team) : c; return `<div class="sb-team t${c}"><h3>${c === 0 ? 'BLUE CREW' : 'RED CREW'} — ${m.teamScore[t]}</h3><table class="sb">${head}${rank.filter((a) => a.team === t).map(row).join('')}</table></div>`; }).join('')}</div>`;
   else html += `<table class="sb">${head}${rank.map(row).join('')}</table>`;
   if (!final) html += `<div style="margin-top:10px;text-align:right"><button class="pill" id="sb-quit">QUIT MATCH</button></div>`;
   sb.innerHTML = html; return sb;

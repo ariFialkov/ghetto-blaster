@@ -12,7 +12,7 @@ export class Actor {
   constructor(match, { name, team = null, faction = 'gang', isPlayer = false, loadout, rng, accent = null, plastic = null }) {
     this.match = match; this.name = name; this.team = team; this.faction = faction; this.isPlayer = isPlayer; this.rng = rng;
     this.body = new Body(match.map.world);
-    this.model = new CharacterModel({ faction, team: match.mode.teams ? team : null, accent, plastic: match.mode.teams ? null : plastic, rng });
+    this.model = new CharacterModel({ faction, team: match.mode.teams ? (match.crewOf ? match.crewOf(team) : team) : null, accent, plastic: match.mode.teams ? null : plastic, rng });
     match.scene.add(this.model.group);
     this.health = MAX_HEALTH; this.maxHealth = MAX_HEALTH; this.armor = 0; this.alive = false; this.respawnT = 0; this.deadT = 0;
     this.kills = 0; this.deaths = 0; this.assists = 0; this.score = 0; this.streakScore = 0; this.bestStreak = 0; this.killStreak = 0; this.headshots = 0;

@@ -65,7 +65,9 @@ export class HUD {
     const flash = Math.min(1, p.fx.flash / 2.5); $('flash').style.opacity = flash.toFixed(2);
     this.dmgA = Math.max(0, this.dmgA - dt * 0.8); const lowHp = p.alive ? (1 - p.health / p.maxHealth) * 0.7 : 0; $('damage-vignette').style.opacity = Math.max(this.dmgA, lowHp).toFixed(2);
     $('scope').classList.toggle('on', !!p.scopeOverlay);
-    $('crosshair').classList.toggle('hide', !!p.scopeOverlay || !p.alive || p.sprint || p.adsBlend > 0.6);
+    // the crosshair stays up while aiming (sights sit just under it); the dot swells a little as the hold steadies
+    const xh = $('crosshair'); xh.classList.toggle('hide', !p.alive || p.sprint); xh.classList.toggle('scoped', !!p.scopeOverlay);
+    xh.style.setProperty('--ads', p.adsBlend.toFixed(3));
     const spread = (p.ads ? w.spreadAds : w.spreadHip) + (p.moving ? w.spreadMove * 0.5 : 0) + (p.body.onGround ? 0 : 1.5) + p.kickP * 40;
     $('crosshair').style.setProperty('--gap', `${6 + spread * 4}px`);
     // damage indicators
@@ -85,13 +87,13 @@ export class HUD {
     $('eq-lethal').innerHTML = `<b>${el.count}</b>${el.def.name}`; $('eq-lethal').classList.toggle('empty', el.count === 0); $('eq-lethal').classList.toggle('hidden', el.def.id === 'none');
     $('eq-tactical').innerHTML = `<b>${et.def.passive ? '●' : et.count}</b>${et.def.name}`; $('eq-tactical').classList.toggle('empty', et.count === 0 && !et.def.passive); $('eq-tactical').classList.toggle('hidden', et.def.id === 'none');
     const rem = Math.max(0, m.mode.timeLimit - m.elapsed); $('hud-timer').textContent = m.state === 'pregame' ? `STARTS IN ${Math.ceil(m.pregameT)}` : fmt(rem);
-    if (m.mode.teams) $('hud-score').innerHTML = `<span class="t0">${m.teamScore[0]}</span><span class="sep">${p.team === 0 ? '◀' : '▶'}</span><span class="t1">${m.teamScore[1]}</span>`;
+    if (m.mode.teams) $('hud-score').innerHTML = `<span class="t0">${m.teamScore[p.team]}</span><span class="sep">◀</span><span class="t1">${m.teamScore[1 - p.team]}</span>`;
     else { const rank = m.ranking(); const i = rank.indexOf(p); const lead = rank[0]; const score = m.mode.id === 'gungame' ? (a) => a.gunGameIndex : (a) => a.kills; $('hud-score').innerHTML = `<span class="me">#${i + 1}</span><span class="sep">YOU ${score(p)}</span><span class="sep">·</span><span>${lead === p ? (rank[1] ? rank[1].name + ' ' + score(rank[1]) : '') : lead.name + ' ' + score(lead)}</span>`; }
     $('hud-objective').textContent = m.mode.teams ? `FIRST TO ${m.mode.scoreLimit}` : m.mode.id === 'gungame' ? `FIRST THROUGH ${m.mode.gunCount} GUNS` : `FIRST TO ${m.mode.scoreLimit} KILLS`;
     $('btn-loadout').classList.toggle('hidden', m.state !== 'pregame');
     // killfeed
     const key = m.feed.map((f) => (f.k ? f.k.name : '') + f.v.name + f.t.toFixed(0)).join('|');
-    if (key !== this.lastFeedKey) { this.lastFeedKey = key; const cls = (a) => a.isPlayer ? 'me' : m.mode.teams ? 't' + a.team : 'ffa'; $('killfeed').innerHTML = m.feed.map((f) => `<div class="kf">${f.k ? `<span class="k ${cls(f.k)}">${f.k.name}</span><span class="w">${f.head ? '☠ ' : ''}${f.w}</span>` : `<span class="w">${f.w}</span>`}<span class="v ${cls(f.v)}">${f.v.name}</span></div>`).join(''); }
+    if (key !== this.lastFeedKey) { this.lastFeedKey = key; const cls = (a) => a.isPlayer ? 'me' : m.mode.teams ? 't' + m.crewOf(a.team) : 'ffa'; $('killfeed').innerHTML = m.feed.map((f) => `<div class="kf">${f.k ? `<span class="k ${cls(f.k)}">${f.k.name}</span><span class="w">${f.head ? '☠ ' : ''}${f.w}</span>` : `<span class="w">${f.w}</span>`}<span class="v ${cls(f.v)}">${f.v.name}</span></div>`).join(''); }
     if (m.streakState.dirty) { m.streakState.dirty = false; this.renderStreaks(true); } else this.renderStreaks();
     if (p.streakScore > 0) $('hud-name').textContent = `SCORE ${p.streakScore}`; else $('hud-name').textContent = p.killStreak > 1 ? `${p.killStreak} STREAK` : '';
   }
