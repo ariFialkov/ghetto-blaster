@@ -136,6 +136,7 @@ export class Match {
     const e = actor.equip[kind]; if (!actor.alive || e.count <= 0 || this.frozen) return;
     if (e.def.passive) return;
     e.count--; this.projectiles.throwFrom(actor, e.def, kind, targetPos);
+    actor.model.act('throw'); if (actor.view && actor.view.act) actor.view.act('throw');
   }
   modsFor(actor) { // streak-driven debuffs on enemies of the player
     const m = { acc: 1, react: 1, incoming: 1 };
@@ -145,7 +146,7 @@ export class Match {
   useStreak(player, slot) {
     const s = this.streakState; const def = s.picks[slot]; if (!def || s.used[slot] || !player.alive || this.frozen) return;
     if (player.streakScore < def.cost) return;
-    s.used[slot] = true; this.applyStreak(def, player); sfx('streak'); this.emit('streak', { def }); this.message(def.name, 1.6);
+    s.used[slot] = true; if (player.view && player.view.act) player.view.act('call'); this.applyStreak(def, player); sfx('streak'); this.emit('streak', { def }); this.message(def.name, 1.6);
   }
   applyStreak(def, p) {
     const P = def.params || {}; const enemies = () => this.enemiesOf(p).filter((e) => e.alive);

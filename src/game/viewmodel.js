@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { buildGunMesh, matteMat } from './character.js';
 import { damp, lerp, clamp } from '../core/rng.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { Spring, Spring3, smooth } from './spring.js';
+import { pathAt, env } from './kinetic.js';
 
 // Sculpted toy-figure hands: four curled finger rings around the grip, a palm pad, a thumb, then a tapered forearm
 // into a hoodie cuff. Built in a local frame where the grip runs along Y, the palm faces -Z and the fingertips +Z.
@@ -56,8 +58,35 @@ export class ViewModel {
     this.sway = new THREE.Vector2(); this.kick = 0; this.kickRot = 0; this.adsBlend = 0; this.sprintBlend = 0; this.reloadBlend = 0; this.swapT = 0; this.bob = new THREE.Vector2();
     this.root.renderOrder = 10;
     this.root.visible = false;
+    // motion springs: every transition (ADS, sprint, reload, lowering, landing, hits) carries velocity, nothing snaps
+    this.sAds = new Spring(0, 3, 1); this.sSpr = new Spring(0, 2.4, 0.85); this.sRl = new Spring(0, 4, 1); this.sLow = new Spring(0, 4.5, 1);
+    this.sway3 = new Spring3(3.4, 0.5); this.imp = new Spring3(2.8, 0.42); this.impR = new Spring3(3.2, 0.38);
+    this.sStrafe = new Spring(0, 2.2, 1); this.sAir = new Spring(0, 3.5, 1);
+    this.throwT = -1; this.callT = -1; this.wasGround = true; this.lastRlK = 0; this.rlEnv = 0; this.pending = null; this.swapPh = 1;
+    // a free left hand for throwing equipment and calling in streaks (same axes as the gun: +X screen-left, +Z forward)
+    this.freeRig = new THREE.Group(); this.freeRig.rotation.y = Math.PI; camera.add(this.freeRig); this.freeRig.visible = false; // on the camera, not the (lowered) gun rig
+    this.freeHand = toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: new THREE.Vector3(), rx: -0.3, armDir: new THREE.Vector3(0.55, -0.6, -1), thumbSide: -1 });
+    this.freeRig.add(this.freeHand);
+    this.grenade = new THREE.Mesh(new THREE.SphereGeometry(0.036, 14, 10), new THREE.MeshStandardMaterial({ color: '#4a5530', roughness: 0.55, metalness: 0.2 }));
+    this.grenade.scale.set(1, 1.2, 1); this.grenade.position.set(0, 0.02, 0.045); this.freeHand.add(this.grenade);
+    this.phone = new THREE.Group(); const body = new THREE.Mesh(new RoundedBoxGeometry(0.052, 0.1, 0.012, 2, 0.006), new THREE.MeshStandardMaterial({ color: '#16181c', roughness: 0.4 }));
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.044, 0.084), new THREE.MeshBasicMaterial({ color: '#3cff8a' })); scr.position.z = -0.0065; scr.rotation.y = Math.PI;
+    this.phone.add(body, scr); this.phone.position.set(0, 0.03, -0.004); this.freeHand.add(this.phone);
+    this.freeRig.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
   }
+  /** One-off first-person actions: 'throw' (lethal / tactical), 'call' (score streak). */
+  act(kind) { if (kind === 'throw') { this.throwT = 0; this.callT = -1; } else if (kind === 'call') { this.callT = 0; this.throwT = -1; } }
+  /** Took a hit: the gun is knocked about and settles back. */
+  onHit(strength = 1) {
+    const k = Math.min(1.6, Math.max(0.3, strength));
+    this.impR.kick((Math.random() - 0.5) * 3.5 * k, (Math.random() - 0.5) * 3.5 * k, (Math.random() - 0.5) * 2.5 * k); this.imp.kick(0, -0.12 * k, 0.18 * k);
+  }
+  /** Equip a weapon. While the gun is on screen, the old one is lowered out of view, swapped, and the new one raised. */
   setWeapon(w) {
+    if (this.gun && this.root.visible && this.weapon !== w) { this.pending = w; this.swapPh = 0; this.swapDur = Math.min(0.7, Math.max(0.3, w.swapTime || 0.45)); return; }
+    this.pending = null; this.swapPh = 1; this._build(w); this.swapT = 0.35;
+  }
+  _build(w) {
     if (this.gun) this.gunHolder.remove(this.gun);
     while (this.hands.children.length) this.hands.remove(this.hands.children[0]);
     this.weapon = w; this.gun = buildGunMesh(w, this.plastic, this.vmShade); this.gunHolder.add(this.gun);
@@ -67,7 +96,8 @@ export class ViewModel {
     // gun space: +Z toward the muzzle, and gun -X is screen right (the holder is turned 180deg).
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     const fit = this.gun.userData.fit;
-    if (fit) { this._fitHands(fit, V); this.swapT = 0.35; return; }
+    this.leftHand = null;
+    if (fit) { this._fitHands(fit, V); this.leftHand = this.hands.children[1] || null; this.leftBase = this.leftHand ? this.leftHand.position.clone() : null; return; }
     this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: V(-0.005, -h / 2 - 0.07, len * 0.2 - 0.01), rx: -0.22, armDir: V(-0.28, -0.42, -1), thumbSide: 1 }));
     if (d.pistol) this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: V(0.035, -h / 2 - 0.1, len * 0.2 + 0.012), rx: -0.12, rz: 0.35, armDir: V(0.6, -0.5, -1), thumbSide: -1 }));
     else {
@@ -76,7 +106,6 @@ export class ViewModel {
       const under = this._underside(z); if (under !== null) y = under + 0.024;
       this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: V(0.004, y, z), rx: -Math.PI / 2, rz: 0.15, armDir: V(0.95, -0.55, -0.75), thumbSide: -1 }));
     }
-    this.swapT = 0.35;
   }
   /** Hands for an artist gun, from its measured grip / fore-end anchors (gun space, real-world scale). */
   _fitHands(f, V) {
@@ -119,27 +148,39 @@ export class ViewModel {
   }
   muzzleWorld(out) { if (!this.gun) return out.copy(this.camera.position); return out.copy(this.gun.userData.muzzle).applyMatrix4(this.gun.matrixWorld); }
   onShot(w) { this.kick = Math.min(0.12, this.kick + w.recoilV * 0.02 + 0.015); this.kickRot = Math.min(0.25, this.kickRot + w.recoilV * 0.03); }
-  /** st: { ads, sprint, moving, speed, onGround, reloading, reloadT, reloadTime, look:{dx,dy}, bobPhase, dead, swapping, lean } */
+  /** st: { ads, sprint, moving, speed, onGround, vy, vRight, vFwd, reloading, reloadT, reloadTime, look:{dx,dy}, bobPhase, dead, hidden, lean, slide, crawl } */
   update(dt, st) {
-    if (!this.gun || st.dead || st.hidden) { this.root.visible = false; return; }
+    if (!this.gun || st.dead || st.hidden) { this.root.visible = false; this.freeRig.visible = false; this.throwT = this.callT = -1; if (this.pending) { this._build(this.pending); this.pending = null; this.swapPh = 1; } return; }
     this.root.visible = true;
-    const w = this.weapon, d = w.model;
-    const adsRate = 1 / Math.max(0.08, w.adsTime);
-    this.adsBlend = damp(this.adsBlend, st.ads ? 1 : 0, adsRate * 3.2, dt);
-    this.sprintBlend = damp(this.sprintBlend, st.sprint && st.moving && !st.ads ? 1 : 0, 9, dt);
-    this.reloadBlend = damp(this.reloadBlend, st.reloading ? 1 : 0, 12, dt);
+    dt = Math.min(dt, 0.05);
+    // weapon swap: lower the old gun out of view, swap at the bottom, raise the new one
+    let swapLow = 0;
+    if (this.swapPh < 1) {
+      this.swapPh = Math.min(1, this.swapPh + dt / (this.swapDur || 0.45));
+      if (this.pending && this.swapPh >= 0.5) { this._build(this.pending); this.pending = null; this.swapT = 0; }
+      swapLow = this.swapPh < 0.5 ? smooth(0, 0.5, this.swapPh) : 1 - smooth(0.5, 1, this.swapPh);
+    }
+    const w = this.weapon, d = w.model, fit = this.gun.userData.fit;
+    const adsF = Math.min(7, Math.max(1.2, 0.9 / Math.max(0.08, w.adsTime)));
+    const ads = this.adsBlend = clamp(this.sAds.step(st.ads ? 1 : 0, dt, adsF), 0, 1);
+    const spr = this.sprintBlend = this.sSpr.step(st.sprint && st.moving && !st.ads ? 1 : 0, dt);
+    const rl = this.reloadBlend = clamp(this.sRl.step(st.reloading ? 1 : 0, dt), 0, 1);
     this.swapT = Math.max(0, this.swapT - dt);
-    // sway follows look input with lag
-    this.sway.x = damp(this.sway.x, clamp(-st.look.dx * 0.0025, -0.06, 0.06), 10, dt);
-    this.sway.y = damp(this.sway.y, clamp(-st.look.dy * 0.0025, -0.06, 0.06), 10, dt);
+    // look inertia: the gun lags the turn and settles with a little overshoot; movement pushes it about
+    const vr = st.vRight || 0, vf = st.vFwd || 0;
+    const sw3 = this.sway3.step(clamp(-st.look.dx * 0.0025, -0.06, 0.06) - vr * 0.003, clamp(-st.look.dy * 0.0025, -0.06, 0.06), vf * 0.0025, dt);
+    const strafe = this.sStrafe.step(clamp(vr / 6, -1, 1), dt);
+    // airborne / landing / take-off
+    const ground = st.onGround !== false, air = this.sAir.step(ground ? 0 : 1, dt);
+    if (ground && !this.wasGround) { const k = Math.min(1.2, Math.max(0.25, -(this.lastVy || 0) * 0.12)); this.imp.kick(0, -0.55 * k, 0.1 * k); this.impR.kick(-1.6 * k, 0, (Math.random() - 0.5) * 0.6 * k); }
+    if (!ground && this.wasGround && (st.vy || 0) > 1) { this.imp.kick(0, -0.3, 0); this.impR.kick(-0.6, 0, 0); }
+    this.wasGround = ground; this.lastVy = st.vy || 0;
     // bob
-    const bobA = st.moving && st.onGround ? (st.sprint ? 0.022 : 0.011) * (1 - this.adsBlend * 0.85) : 0;
+    const bobA = st.moving && ground ? (st.sprint ? 0.022 : 0.011) * (1 - ads * 0.85) : 0;
     this.bob.x = damp(this.bob.x, Math.cos(st.bobPhase) * bobA, 12, dt); this.bob.y = damp(this.bob.y, Math.abs(Math.sin(st.bobPhase)) * bobA * 1.4, 12, dt);
     // recoil recovery
     this.kick = damp(this.kick, 0, 16, dt); this.kickRot = damp(this.kickRot, 0, 14, dt);
     // base poses
-    const ads = this.adsBlend, spr = this.sprintBlend, rl = this.reloadBlend;
-    const fit = this.gun.userData.fit;
     const sightY = fit ? fit.sight : d.pistol ? h2(d) * 0.6 + 0.015 : (d.scope ? h2(d) + 0.035 + d.scope * 0 : h2(d) + 0.015);
     const hipPos = fit && d.pistol ? new THREE.Vector3(0.15, -0.17, -0.34) : new THREE.Vector3(0.17, -0.19 - (d.pistol ? 0.02 : 0), -0.36 - (d.pistol ? 0 : 0.05));
     const adsZ = -0.28 - (d.pistol ? 0 : 0.08);
@@ -149,20 +190,70 @@ export class ViewModel {
     const rot = new THREE.Vector3(0, 0, 0);
     // sprint: lower and angle the gun
     pos.lerp(new THREE.Vector3(0.2, -0.21, -0.34), spr); rot.x -= spr * 0.3; rot.y += spr * 0.55; rot.z += spr * 0.2;
-    // reload: dip and tilt, with a little shake pattern
-    const rt = st.reloadTime || 2; const rk = clamp(st.reloadT / rt, 0, 1); const wob = Math.sin(rk * Math.PI * 3) * 0.08;
-    pos.y -= rl * 0.1; rot.x += rl * (0.35 + wob); rot.z += rl * 0.3;
-    // weapon swap: raise from below
-    const sw = this.swapT / 0.35; pos.y -= sw * sw * 0.35; rot.x -= sw * 0.6;
+    // reload: roll the gun to present the magazine well; beats (mag out, mag in, charge) land as impulses
+    const rt = st.reloadTime || 2, rk = st.reloading ? clamp(st.reloadT / rt, 0, 1) : this.lastRlK;
+    if (st.reloading) this.rlEnv = env(rk, 0, 0.12, 0.86, 1);
+    const re = rl * this.rlEnv;
+    pos.y -= 0.03 * re; pos.x -= 0.02 * re; pos.z += 0.03 * re; rot.x += 0.1 * re; rot.z += 0.2 * re; rot.y += 0.14 * re;
+    if (st.reloading) {
+      const beat = (b, f) => { if (this.lastRlK < b && rk >= b) f(); };
+      beat(0.22, () => { this.imp.kick(0, -0.2, 0); this.impR.kick(-0.7, 0, 0.5); });          // magazine out
+      beat(0.54, () => { this.imp.kick(0, 0.32, 0); this.impR.kick(1.3, 0, -0.4); });          // new magazine slapped home
+      beat(0.74, () => { this.imp.kick(0.05, 0, 0.35); this.impR.kick(0.7, 0.4, 0.2); });      // charging handle / slide
+    }
+    this.lastRlK = st.reloading ? rk : this.lastRlK;
+    // the support hand does the magazine change (artist guns): to the mag, out of view for a fresh one, slap it in, rack
+    if (fit && this.leftHand && this.leftBase) {
+      const P = this._rlPts || (this._rlPts = Array.from({ length: 8 }, () => new THREE.Vector3())), ks = [0, 0.16, 0.3, 0.44, 0.56, 0.7, 0.8, 1];
+      const mag = fit.mag, pistol = fit.hold === 'pistol';
+      P[0].copy(this.leftBase); P[1].set(0.02, mag[1] - 0.03, mag[0]); P[2].set(0.12, mag[1] - 0.36, mag[0] - 0.05); P[3].copy(P[2]);
+      P[4].set(0.02, mag[1] - 0.015, mag[0]);
+      if (pistol) P[5].set(0.0, fit.sight + 0.015, 0.02); else P[5].set(0.07, fit.sight * 0.5, fit.grip[0] + 0.07);
+      P[6].copy(P[5]).add(new THREE.Vector3(0, 0, -0.06)); P[7].copy(this.leftBase);
+      const hp = pathAt(this._rlHp || (this._rlHp = new THREE.Vector3()), P, ks, rk);
+      this.leftHand.position.lerpVectors(this.leftBase, hp, rl);
+    }
+    // lowered: weapon swap, throwing, calling in a streak
+    let actLow = 0;
+    if (this.throwT >= 0) { this.throwT += dt / 0.72; if (this.throwT >= 1) this.throwT = -1; else actLow = env(this.throwT, 0, 0.12, 0.8, 1); }
+    if (this.callT >= 0) { this.callT += dt / 1.15; if (this.callT >= 1) this.callT = -1; else actLow = env(this.callT, 0, 0.14, 0.86, 1); }
+    const low = this.sLow.step(Math.max(swapLow, actLow), dt, swapLow > 0 ? 9 : 4.5);
+    pos.y -= 0.34 * low; pos.x += 0.05 * low; rot.x -= 0.9 * low; rot.z -= 0.45 * low; rot.y -= 0.15 * low;
+    this._freeHand(dt);
+    // weapon swap from nothing (spawn): raise from below
+    const swp = this.swapT / 0.35; pos.y -= swp * swp * 0.35; rot.x -= swp * 0.6;
     // slide: gun tilts in and drops slightly; crawl: gun lowered, rocking with each pull
     this.slideB = damp(this.slideB || 0, st.slide ? 1 : 0, 10, dt); this.crawlB = damp(this.crawlB || 0, st.crawl ? 1 : 0, 7, dt);
     pos.x -= this.slideB * 0.05; pos.y -= this.slideB * 0.035; rot.z += this.slideB * 0.42; rot.y -= this.slideB * 0.08;
     const cs = Math.sin(st.bobPhase * 0.5);
     pos.y -= this.crawlB * (0.05 + Math.abs(cs) * 0.025); pos.x += this.crawlB * (0.02 + cs * 0.03); rot.x -= this.crawlB * 0.18; rot.z += this.crawlB * (0.28 + cs * 0.12);
-    // sway, bob, recoil, lean
-    pos.x += this.sway.x * (1 - ads * 0.6) + this.bob.x; pos.y += this.sway.y * (1 - ads * 0.6) + this.bob.y; pos.z += this.kick;
-    rot.y += this.sway.x * 1.5 * (1 - ads * 0.5); rot.x += this.sway.y * 1.5 * (1 - ads * 0.5) + this.kickRot; rot.z += (st.lean || 0) * 0.06;
+    // strafe roll, air lift, inertia, impulses, bob, recoil, lean
+    rot.z -= strafe * 0.07 * (1 - ads * 0.7); pos.x -= strafe * 0.012 * (1 - ads);
+    pos.y += air * 0.018 * (1 - ads * 0.5); rot.x += air * 0.04;
+    const ip = this.imp.step(0, 0, 0, dt), ir = this.impR.step(0, 0, 0, dt);
+    const am = 1 - ads * 0.6;
+    pos.x += sw3.x * am + this.bob.x + ip.x * 0.1; pos.y += sw3.y * am + this.bob.y + ip.y * 0.1; pos.z += this.kick + sw3.z + ip.z * 0.1;
+    rot.y += sw3.x * 1.5 * (1 - ads * 0.5); rot.x += sw3.y * 1.5 * (1 - ads * 0.5) + this.kickRot + ir.x * 0.1; rot.z += (st.lean || 0) * 0.06 + ir.z * 0.1; rot.y += ir.y * 0.1;
+    // idle breathing
+    const br = Math.sin((this.t = (this.t || 0) + dt) * 1.6) * (1 - (st.moving ? 1 : 0)); pos.y += br * 0.0025 * (1 - ads * 0.8); rot.x += br * 0.004 * (1 - ads * 0.8);
     this.root.position.copy(pos); this.root.rotation.set(rot.x, rot.y, rot.z);
+  }
+  /** The free left hand: a throw (reach, wind up, release, follow through) or a phone call-in for a streak. */
+  _freeHand(dt) {
+    const fh = this.freeHand, k = this.throwT >= 0 ? this.throwT : this.callT;
+    this.freeRig.visible = k >= 0; if (k < 0) return;
+    const P = this._fhPts || (this._fhPts = Array.from({ length: 6 }, () => new THREE.Vector3()));
+    if (this.throwT >= 0) {
+      P[0].set(0.26, -0.6, 0.4); P[1].set(0.2, -0.2, 0.36); P[2].set(0.3, -0.03, 0.28); P[3].set(0.06, 0.1, 0.62); P[4].set(-0.08, -0.26, 0.52); P[5].set(0.0, -0.75, 0.45);
+      pathAt(fh.position, P, [0, 0.18, 0.32, 0.46, 0.64, 1], k);
+      fh.rotation.set(0.6 * env(k, 0.1, 0.3, 0.32, 0.46) - 0.9 * env(k, 0.36, 0.48, 0.6, 0.9), 0.3 * env(k, 0.2, 0.32, 0.4, 0.6), 0);
+      this.grenade.visible = k < 0.46; this.phone.visible = false;
+    } else {
+      P[0].set(0.2, -0.62, 0.4); P[1].set(0.1, -0.14, 0.36); P[2].set(0.1, -0.125, 0.36); P[3].set(0.1, -0.14, 0.36); P[4].set(0.2, -0.62, 0.4);
+      pathAt(fh.position, P, [0, 0.26, 0.5, 0.74, 1], k);
+      fh.position.y -= 0.01 * (env(k, 0.4, 0.44, 0.46, 0.5) + env(k, 0.56, 0.6, 0.62, 0.66)); // thumb presses
+      fh.rotation.set(-0.35, 0.15, 0.1); this.grenade.visible = false; this.phone.visible = true;
+    }
   }
   setColors(skin, sleeve) { this.skinMat.color.set(skin).multiplyScalar(this.vmShade); this.cuffMat.color.set(sleeve).multiplyScalar(this.vmShade * 0.88); }
 }

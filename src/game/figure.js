@@ -13,6 +13,7 @@ const V = () => new THREE.Vector3(), Q = () => new THREE.Quaternion();
 const Y = new THREE.Vector3(0, 1, 0);
 const _m = new THREE.Matrix4(), _invG = new THREE.Matrix4(), _p = V(), _s = V(), _q = Q(), _q2 = Q(), _q3 = Q();
 const _a = V(), _t = V(), _e = V(), _d = V(), _n = V(), _pole = V(), _tmp = V(), _tw1 = V(), _tw2 = V(), _tw3 = V(), _bend = V();
+const _ta = V(), _hq = Q();
 
 export class Figure {
   constructor(template, material, scale = 1) {
@@ -143,6 +144,39 @@ export class Figure {
     _bend.copy(_pole); // perpendicular to the chain, towards the elbow / knee
     this._aim(upper, _tmp.subVectors(_e, _a), _bend);
     this._aim(lower, _d.subVectors(target, _e), _bend);
+  }
+  // ---- direct posing (kinetic animator, src/game/kinetic.js): everything in the CharacterModel group's space ----
+  /** Start a pose: caches the group transform. */
+  begin(group) { group.updateMatrixWorld(true); _invG.copy(group.matrixWorld).invert(); }
+  /** Hips bone at group-space position `pos`, rotated by the group-space delta `dq` from its bind pose. */
+  setPelvis(pos, dq) {
+    const bone = this.b.Hips; _m.multiplyMatrices(_invG, bone.parent.matrixWorld).invert();
+    bone.position.copy(pos).applyMatrix4(_m);
+    this._setRootQ('Hips', _q.copy(dq).multiply(this.rest.Hips.q));
+  }
+  /** Any bone to (group-space delta) x (bind orientation). */
+  setRot(name, dq) { this._setRootQ(name, _q.copy(dq).multiply(this.rest[name].q)); }
+  /** Bone position in group space. */
+  pos(name, out) { return this._pos(name, out); }
+  /** Bone orientation in group space. */
+  quat(name, out) { _m.multiplyMatrices(_invG, this.b[name].matrixWorld); _m.decompose(_p, out, _s); return out; }
+  /**
+   * Arm IK: palm centre to `target`; with F/N (finger direction, palm normal) the hand is oriented and the wrist placed
+   * so the oriented palm lands on the target. `pole`: a point the elbow bends towards. All group space.
+   */
+  arm(side, target, F, N, pole) {
+    _ta.copy(target); let hq = null;
+    if (F && N && this.hand[side]) { hq = this._handQ(side, F, N, _hq); _ta.sub(_d.copy(this.hand[side].palm).applyQuaternion(hq)); }
+    _pole.copy(pole);
+    this._ik(side + 'Arm', side + 'ForeArm', this.len[side], _ta, _pole);
+    if (hq) this._setRootQ(side + 'Hand', hq);
+    else { this.b[side + 'Hand'].quaternion.copy(this.rest[side + 'Hand'].lq); this.b[side + 'Hand'].updateMatrixWorld(true); }
+  }
+  /** Leg IK: ankle to `ankle`, knee towards `pole`, foot turned by the group-space delta `footQ`. */
+  leg(side, ankle, footQ, pole) {
+    _ta.copy(ankle); _pole.copy(pole);
+    this._ik(side + 'UpLeg', side + 'Leg', this.len[side + 'Leg'], _ta, _pole);
+    this.setRot(side + 'Foot', footQ);
   }
   /**
    * cm: the CharacterModel (pivots already posed this frame). hands: { obj, Right, Left } grip points in obj's local

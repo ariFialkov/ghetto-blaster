@@ -67,7 +67,7 @@ export class Actor {
     if (this.burstLeft > 0) { this.burstCd -= dt; }
     // model
     this.model.group.position.copy(this.body.pos); this.model.group.rotation.y = this.body.yaw;
-    this.model.update(dt, { speed: this.speed, moving: this.moving, sprint: this.sprint, crouch: this.body.crouch, ads: this.ads, onGround: this.body.onGround, pitch: this.pitch, lean: this.lean, dead: !this.alive, reloading: this.reloading, reloadT: this.reloadT, firing: this.firing && this.match.time - this.lastShotT < 0.08, jugg: this.fx.jugg > 0 });
+    this.model.update(dt, { speed: this.speed, moving: this.moving, sprint: this.sprint, crouch: this.body.crouch, prone: this.body.prone, slide: !!this.sliding, slideSide: this.slideSide || 1, ads: this.ads, onGround: this.body.onGround, pitch: this.pitch, lean: this.lean, dead: !this.alive, reloading: this.reloading, reloadT: this.reloadT, reloadTime: this.weapon.def.reload * (this.fx.speed > 0 ? 0.75 : 1), firing: this.firing && this.match.time - this.lastShotT < 0.08, jugg: this.fx.jugg > 0 });
     this.firing = false;
   }
   canFire() { const w = this.weapon; return this.alive && !this.reloading && this.swapT <= 0 && this.fireCd <= 0 && w.mag > 0 && this.fx.stun <= 0 && this.fx.knock <= 0; }
@@ -112,6 +112,7 @@ export class Actor {
       }
     }
     this.match.fx.muzzle(muzzle, dir, d.type === 'melee' ? 'none' : d.sound, { firstPerson: this.isPlayer });
+    this.model.shot(d.recoilV || 1, d.type === 'shotgun' || d.type === 'sniper');
     if (!d.suppressed || this.isPlayer) this.match.fx.casing(muzzle, new THREE.Vector3(-Math.cos(this.body.yaw), 0, Math.sin(this.body.yaw)));
     this.match.audio('shot', this, null, { kind: d.sound });
     this.match.onShot(this, d);
@@ -124,7 +125,11 @@ export class Actor {
     if (this.armor > 0) { const a = Math.min(this.armor, amount * 0.7); this.armor -= a; amount -= a; }
     this.health -= amount; this.lastDamageTime = this.match.time;
     if (attacker && attacker !== this) { this.lastHitBy = attacker; this.lastHitT = this.match.time; this.damageTakenFrom.set(attacker, (this.damageTakenFrom.get(attacker) || 0) + amount); }
-    if (!silent) { this.model.hit(); this.onDamaged && this.onDamaged(amount, attacker, point); }
+    // which way the hit pushes (visual only): away from the blast centre, else along the shot from the attacker
+    const from = part === 'explosion' && point ? point : attacker && attacker !== this ? attacker.pos : null;
+    const push = from ? new THREE.Vector3(this.pos.x - from.x, 0, this.pos.z - from.z) : null;
+    this._lastHit = { push, strength: part === 'explosion' ? 2.2 : clamp(amount / 45, 0.35, 1.6), part };
+    if (!silent) { this.model.hit(push, this._lastHit.strength, part); if (this.view && this.view.onHit) this.view.onHit(this._lastHit.strength); this.onDamaged && this.onDamaged(amount, attacker, point); }
     if (this.health <= 0) { this.health = 0; this.die(attacker, part); }
     return amount;
   }
@@ -132,7 +137,7 @@ export class Actor {
     if (!this.alive) return;
     this.alive = false; this.deaths++; this.deadT = 0; this.respawnT = this.match.mode.respawn; this.ads = false; this.reloading = false; this.fx.burn = 0;
     const dir = killer && killer !== this ? (killer.pos.clone().sub(this.pos).dot(this.forward(new THREE.Vector3())) > 0 ? 1 : -1) : 1;
-    this.model.die(dir);
+    const lh = this._lastHit || {}; this.model.die(dir, lh.push || null, Math.max(1, lh.strength || 1), part === 'head' ? 'head' : lh.part || part);
     this.match.onDeath(this, killer, part);
     this.onDied && this.onDied(killer);
   }

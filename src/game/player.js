@@ -219,7 +219,8 @@ export class Player extends Actor {
     cam.rotateX(this.kickP * 0.6);
     cam.updateMatrixWorld();
     const vc = m.engine.vmCamera; vc.position.copy(cam.position); vc.quaternion.copy(cam.quaternion); vc.updateMatrixWorld(true);
-    this.view.update(dt, { ads: this.ads, sprint: this.sprint, moving: this.moving, speed: this.speed, onGround: this.body.onGround, reloading: this.reloading, reloadT: this.reloadT, reloadTime: w.reload, look: this.lastLook, bobPhase: this.bobPhase, dead: false, hidden: scoped, lean: this.model.lean, slide: this.sliding, crawl: this.body.prone && this.moving, prone: this.body.prone });
+    const bv = this.body.vel, vRight = -bv.x * Math.cos(this.yaw) + bv.z * Math.sin(this.yaw), vFwd = bv.x * Math.sin(this.yaw) + bv.z * Math.cos(this.yaw);
+    this.view.update(dt, { ads: this.ads, sprint: this.sprint, moving: this.moving, speed: this.speed, onGround: this.body.onGround, vy: bv.y, vRight, vFwd, reloading: this.reloading, reloadT: this.reloadT, reloadTime: w.reload, look: this.lastLook, bobPhase: this.bobPhase, dead: false, hidden: scoped, lean: this.model.lean, slide: this.sliding, crawl: this.body.prone && this.moving, prone: this.body.prone });
     m.engine.updateSunTarget(this.body.pos);
   }
 }

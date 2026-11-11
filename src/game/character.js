@@ -7,6 +7,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { MODELS, figureKey, propMaterial } from './models.js';
 import { Figure } from './figure.js';
 import { scaledFit } from './gunfit.js';
+import { Kinetic } from './kinetic.js';
 import { clamp, damp } from '../core/rng.js';
 import { SKIN_TONES, HOODIE_COLORS } from './names.js';
 const SKIN_TONE_SLOTS = SKIN_TONES, HOODIE_SLOTS = HOODIE_COLORS; // only used to replay the legacy RNG draws
@@ -194,7 +195,12 @@ export class CharacterModel {
     this.armorMat = painted ? matteMat(base, 0.45) : P(1).clone(); if (!painted) { this.armorMat.color.multiplyScalar(0.45); this.armorMat.roughness = 0.55; }
     if (tpl) { const fig = new Figure(tpl, painted ? paintedMat(tpl.userData.paint, base) : P(1), s); if (fig.ok) { this.group.traverse((o) => { if (o.isMesh) o.visible = false; }); this.figure = fig; this.group.add(fig.root); } }
   }
+  /** Equip a weapon. With the kinetic animator running, the old gun is lowered, swapped at the bottom and raised. */
   setGun(weapon) {
+    if (weapon && this.kin && this.fit && !this.dead && this.kin.canSwap()) { this.kin.beginSwap(weapon, weapon.swapTime || 0.5); return; }
+    this._setGunNow(weapon);
+  }
+  _setGunNow(weapon) {
     if (this.gunMesh) { this.gunMount.remove(this.gunMesh); }
     this.gunMesh = weapon ? buildGunMesh(weapon, this.plastic) : null;
     if (this.gunMesh) { this.gunMount.add(this.gunMesh); this.gunIsPistol = !!this.gunMesh.userData.pistol; }
@@ -208,6 +214,8 @@ export class CharacterModel {
   /** state: { speed (m/s), moving(bool), sprint, crouch, ads, onGround, pitch, lean(-1..1), dead, reloading, firing } */
   update(dt, st) {
     if (this.isDog) return this.updateDog(dt, st);
+    if (this.figure && this.fit && this.figure.ok) return this._updateKinetic(dt, st);
+    if (this.gunMount.parent !== this.torso) this.torso.add(this.gunMount); // legacy box-rig hold
     const s = this.scale;
     if (st.dead) {
       this.deathT += dt;
@@ -266,6 +274,18 @@ export class CharacterModel {
     }
     this._applyFigure(st);
   }
+  /** Skinned figures with a fitted gun: the kinetic animator (src/game/kinetic.js) drives the skeleton directly. */
+  _updateKinetic(dt, st) {
+    if (this.gunMount.parent !== this.group) this.group.add(this.gunMount); // the gun is placed in group space
+    if (!this.kin) this.kin = new Kinetic(this);
+    if (st.dead) { this.deathT += dt; this._melt(); } else if (this.deathT) { this.deathT = 0; this.group.scale.set(1, 1, 1); }
+    this.kin.update(dt, st);
+    if (this.figure && (st.jugg || this.figure.armor)) this.figure.setArmor(!!st.jugg && !st.dead, this.armorMat);
+  }
+  /** One-off actions for the animator: 'throw' (lethal / tactical). */
+  act(kind) { if (this.kin) this.kin.act(kind); }
+  /** A shot was fired: recoil into the gun, shoulder and spine. */
+  shot(recoil = 1, heavy = false) { if (this.kin) this.kin.onShot(recoil, heavy); }
   /**
    * Real-world weapon hold for the generated figures (fitted guns only).
    * Rifles: butt in the right shoulder pocket, body bladed ~34 degrees so the short toy arms reach the handguard, head
@@ -391,9 +411,11 @@ export class CharacterModel {
   }
   /** Toy death: after the fall the plastic slumps and spreads a little. */
   _melt() { const k = clamp((this.deathT - 0.55) / 1.4, 0, 1), e = k * (2 - k); this.group.scale.set(1 + e * 0.14, 1 - e * 0.32, 1 + e * 0.14); }
-  die(dir = 1) { this.dead = true; this.deathDir = dir; this.deathT = 0; }
-  revive() { this.dead = false; this.deathT = 0; this.group.scale.set(1, 1, 1); this.hips.rotation.set(0, 0, 0); this.hips.position.set(0, 0.95 * this.scale, 0); }
-  hit() { this.flinch = 1; }
+  /** dir: +1 / -1 fall direction for the box rig; push: the killing shot's travel direction (world); strength; part. */
+  die(dir = 1, push = null, strength = 1, part = 'body') { this.dead = true; this.deathDir = dir; this.deathT = 0; if (this.kin) this.kin.die(push, strength, part); }
+  revive() { this.dead = false; this.deathT = 0; this.group.scale.set(1, 1, 1); this.hips.rotation.set(0, 0, 0); this.hips.position.set(0, 0.95 * this.scale, 0); if (this.kin) this.kin.reset(); }
+  /** Took a hit: dir = the shot's travel direction (world), strength ~0.3..2, part. */
+  hit(dir = null, strength = 1, part = 'body') { this.flinch = 1; if (this.kin && dir) this.kin.onHit(dir, strength, part); }
   setVisible(v) { this.group.visible = v; }
   dispose() { this.group.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); }
 }
