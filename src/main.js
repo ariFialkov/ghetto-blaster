@@ -1,5 +1,6 @@
 // Ghetto Blaster — app state machine: title (cinematic) -> modes -> lobby -> match -> results.
 import * as THREE from 'three';
+import '@fontsource/anton/400.css';
 import { Engine } from './core/engine.js';
 import { Input } from './core/input.js';
 import { RNG, hashString, damp } from './core/rng.js';
@@ -11,8 +12,8 @@ import { getSave, persist, allLoadouts, resolveLoadout } from './game/loadouts.j
 import { findStreak } from './game/streaks.js';
 import { HUD } from './ui/hud.js';
 import * as UI from './ui/menu.js';
-import { renderCovers } from './ui/covers.js';
 import { PadNav } from './ui/padnav.js';
+import { loadModels } from './game/models.js';
 import { btn, padLabel } from './ui/padglyphs.js';
 
 const $ = (id) => document.getElementById(id);
@@ -85,20 +86,14 @@ function updateCinematic(dt) {
   engine.updateSunTarget(new THREE.Vector3(lx, 0, lz));
   if (cinT >= dur) { cinIndex++; setupCinematicShot(); }
 }
-// staged cover shots for the mode panels (cached per map)
-const coverCache = new Map();
-function captureArts() {
-  if (coverCache.has('covers')) return coverCache.get('covers');
-  let arts;
-  try { arts = renderCovers(engine); } catch (e) { console.warn('cover render failed', e); arts = []; }
-  coverCache.set('covers', arts); return arts;
-}
+// illustrated 2D card art for the mode panels (public/ui), in MODES order: TDM, FFA, Gun Game
+const MODE_ARTS = ['./ui/mode-tdm.jpg', './ui/mode-ffa.jpg', './ui/mode-gungame.jpg'];
+for (const src of MODE_ARTS) { const im = new Image(); im.src = src; } // warm the cache so the cards don't pop in
 
 // ---------------- modes ----------------
 function enterModes() {
   app.state = 'modes'; initAudio(); sfx('ui');
-  const arts = captureArts();
-  UI.showModes(arts, save.wallet, (mode) => enterLobby(mode));
+  UI.showModes(MODE_ARTS, save.wallet, (mode) => enterLobby(mode));
 }
 
 // ---------------- lobby ----------------
@@ -225,9 +220,10 @@ let toastT = null;
 function toast(text) { const t = $('pad-toast'); t.textContent = text; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200); }
 window.addEventListener('gamepadconnected', (e) => { const ps = /054c|dualsense|dualshock|playstation|ps5|ps4/i.test(e.gamepad.id); toast(`${padLabel(ps ? 'ps' : 'xbox')} CONTROLLER CONNECTED`); });
 window.addEventListener('gamepaddisconnected', () => { toast('CONTROLLER DISCONNECTED'); if (app.state === 'match' && app.match && app.match.state === 'live') pauseMatch(); });
-updatePadPrompts();
+// the play prompt is set once the models have loaded (see the loadModels call below)
 // first touch anywhere unlocks audio
 window.addEventListener('pointerdown', () => initAudio(), { once: true });
 
 window.__gb = { app, engine, input, hud, save, padNav };
-enterTitle();
+// generated 3D models load before the first scene is built; on failure the procedural box models are used
+loadModels('./', { lowTextures: settings.quality === 'low' }).catch((e) => console.warn('models unavailable, using procedural models', e)).finally(() => { enterTitle(); updatePadPrompts(); });

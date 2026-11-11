@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import { Actor } from './actor.js';
 import { clamp, damp, lerp, dampAngle } from '../core/rng.js';
 import { ViewModel } from './viewmodel.js';
-import { SKIN_TONES } from './names.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _dir = new THREE.Vector3(), _o = new THREE.Vector3(), _t = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -24,7 +23,7 @@ export class Player extends Actor {
     this.leanDir = 0;
     this.aimPoint = new THREE.Vector3();
     this.sensitivity = 1;
-    this.view = new ViewModel(match.engine.vmCamera, { skin: this.rng.pick(SKIN_TONES), sleeve: this.model.accent || '#2b2b2b' });
+    this.view = new ViewModel(match.engine.vmCamera, { plastic: this.model.plastic, skin: this.model.skinTone, bareArms: this.model.hat === 'bandana' });
     this.view.setWeapon(this.weapon.def);
     this.model.setVisible(false); // first person: own body hidden while alive
     this.lastLook = { dx: 0, dy: 0 };
@@ -36,6 +35,7 @@ export class Player extends Actor {
   onSpawn() { this.yaw = this.body.yaw; this.pitch = 0; this.recoilP = 0; this.recoilY = 0; this.adsBlend = 0; this.crouchToggle = false; this.leanDir = 0; this.snapCamera = true; this.stance = 'stand'; this.slideT = -1; this.slideBlend = 0; this.lastDuckT = -9;
     // loadout or streak changes made mid-match take effect on the next spawn (COD rules)
     if (this.nextLoadout) { this.setLoadout(this.nextLoadout); this.nextLoadout = null; }
+    if (this.view && this.view.weapon !== this.weapon.def) this.view.setWeapon(this.weapon.def); // spawn resets to the primary
     if (this.nextStreaks) { const st = this.match.streakState; this.nextStreaks.forEach((d, i) => { if (d && st.picks[i] !== d) { st.picks[i] = d; st.used[i] = false; } }); this.nextStreaks = null; st.dirty = true; }
   }
   get sliding() { return this.slideT >= 0; }

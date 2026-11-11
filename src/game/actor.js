@@ -9,10 +9,10 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Vector
 export const MAX_HEALTH = 100;
 
 export class Actor {
-  constructor(match, { name, team = null, faction = 'gang', isPlayer = false, loadout, rng, accent = null }) {
+  constructor(match, { name, team = null, faction = 'gang', isPlayer = false, loadout, rng, accent = null, plastic = null }) {
     this.match = match; this.name = name; this.team = team; this.faction = faction; this.isPlayer = isPlayer; this.rng = rng;
     this.body = new Body(match.map.world);
-    this.model = new CharacterModel({ faction, team: match.mode.teams ? team : null, accent, rng });
+    this.model = new CharacterModel({ faction, team: match.mode.teams ? team : null, accent, plastic: match.mode.teams ? null : plastic, rng });
     match.scene.add(this.model.group);
     this.health = MAX_HEALTH; this.maxHealth = MAX_HEALTH; this.armor = 0; this.alive = false; this.respawnT = 0; this.deadT = 0;
     this.kills = 0; this.deaths = 0; this.assists = 0; this.score = 0; this.streakScore = 0; this.bestStreak = 0; this.killStreak = 0; this.headshots = 0;
@@ -67,7 +67,7 @@ export class Actor {
     if (this.burstLeft > 0) { this.burstCd -= dt; }
     // model
     this.model.group.position.copy(this.body.pos); this.model.group.rotation.y = this.body.yaw;
-    this.model.update(dt, { speed: this.speed, moving: this.moving, sprint: this.sprint, crouch: this.body.crouch, ads: this.ads, onGround: this.body.onGround, pitch: this.pitch, lean: this.lean, dead: !this.alive, reloading: this.reloading, reloadT: this.reloadT, firing: this.firing && this.match.time - this.lastShotT < 0.08 });
+    this.model.update(dt, { speed: this.speed, moving: this.moving, sprint: this.sprint, crouch: this.body.crouch, ads: this.ads, onGround: this.body.onGround, pitch: this.pitch, lean: this.lean, dead: !this.alive, reloading: this.reloading, reloadT: this.reloadT, firing: this.firing && this.match.time - this.lastShotT < 0.08, jugg: this.fx.jugg > 0 });
     this.firing = false;
   }
   canFire() { const w = this.weapon; return this.alive && !this.reloading && this.swapT <= 0 && this.fireCd <= 0 && w.mag > 0 && this.fx.stun <= 0 && this.fx.knock <= 0; }
@@ -103,7 +103,7 @@ export class Actor {
           let dmg = damageAtRange(d, dist) * (hit.part === 'head' ? d.headshot : 1);
           dmg *= this.match.director.damageMult(this, hit.actor);
           hit.actor.takeDamage(dmg, this, hit.part, hit.point);
-          this.match.fx.impact(hit.point, sd.clone().negate(), 'blood');
+          this.match.fx.impact(hit.point, sd.clone().negate(), 'blood', hit.actor.model.plastic);
           this.onHit && this.onHit(hit.actor, hit.part, dmg);
         } else {
           this.match.fx.impact(hit.point, hit.normal || new THREE.Vector3(0, 1, 0), 'concrete');

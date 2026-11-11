@@ -1,14 +1,15 @@
 // Asset registry for the catalog. Every entry builds its object from the real game code, so the catalog
 // always reflects what the game currently ships.
 import * as THREE from 'three';
-import { CharacterModel, buildGunMesh, buildThrowableMesh, TEAM_COLORS } from '../game/character.js';
+import { CharacterModel, buildGunMesh, buildThrowableMesh, TEAM_COLORS, FFA_COLORS, FACTION_PLASTIC } from '../game/character.js';
 import { WEAPONS, GUN_GAME_ORDER } from '../game/weapons.js';
 import { TACTICALS, LETHALS } from '../game/equipment.js';
 import { STOCK_LOADOUTS } from '../game/loadouts.js';
 import { streaksForMap } from '../game/streaks.js';
-import { SKIN_TONES, HOODIE_COLORS, FACTIONS } from '../game/names.js';
+import { FACTIONS } from '../game/names.js';
 import { ViewModel } from '../game/viewmodel.js';
 import { MapBuilder, PROP_TYPES } from '../maps/builder.js';
+import { unitMesh } from '../game/models.js';
 import { MAPS } from '../maps/index.js';
 import { tex } from '../core/textures.js';
 import { FX, MUZZLE_PROFILES } from '../core/engine.js';
@@ -28,32 +29,59 @@ function posed(model, pose = 'idle') {
 const RIG_NOTES = 'Procedural box rig. Pivots: hips at y 0.95 → torso → neck/head and shoulder pivots (armL/armR); hip pivots for legL/legR; gunMount inside torso. Forward is +Z, origin at the feet. Animated in code: walk, sprint, crouch, prone height, ADS, reload, flinch, death.';
 const HITBOX = 'Head sphere r 0.17 m at (height − 0.18); body box 0.6 × (height − 0.25) × 0.6. Height 1.8 standing, 1.25 crouched, 0.6 prone.';
 const CHARACTERS = [
-  { key: 'gang-hood', name: 'Gang member — hoodie', opts: { faction: 'gang', hat: 'hood', shirt: '#2b2b2b', pants: '#1e1e1e' }, desc: 'Default street faction. Hoodie up; random skin tone and hoodie colour per bot.' },
-  { key: 'gang-cap', name: 'Gang member — cap', opts: { faction: 'gang', hat: 'cap', shirt: TEAM_COLORS[0], pants: '#2a3a5a', accent: TEAM_COLORS[0] }, desc: 'Street faction with a cap in the crew colour. Shown in blue crew colours.' },
-  { key: 'gang-bandana', name: 'Gang member — bandana', opts: { faction: 'gang', hat: 'bandana', shirt: TEAM_COLORS[1], pants: '#1e1e1e', accent: TEAM_COLORS[1] }, desc: 'Street faction with a bandana. Shown in red crew colours.' },
-  { key: 'hitman', name: 'Hitman', opts: { faction: 'hitman' }, desc: 'Black suit, white tie, shades.' },
-  { key: 'sicario', name: 'Sicario', opts: { faction: 'sicario' }, desc: 'Balaclava, tactical vest, olive pants. Also used for the Colectivo streak crew.' },
-  { key: 'cop', name: 'Police officer', opts: { faction: 'cop' }, desc: 'Light-blue uniform, navy pants, cap, badge and belt. Also the LAPD / NYPD / CRS streak crews.' },
+  { key: 'gang-hood', name: 'Gang member — hoodie', opts: { faction: 'gang', hat: 'hood' }, desc: 'Default street faction, painted miniature. Hood up, denim joggers, boots; the hoodie takes the crew colour.' },
+  { key: 'gang-cap', name: 'Gang member — cap', opts: { faction: 'gang', hat: 'cap', plastic: TEAM_COLORS[0] }, desc: 'Street faction: backwards cap, gold chain, baggy jeans. The puffer jacket takes the crew colour (shown blue).' },
+  { key: 'gang-bandana', name: 'Gang member — bandana', opts: { faction: 'gang', hat: 'bandana', plastic: TEAM_COLORS[1] }, desc: 'Street faction: cargo shorts and high-tops. Tank top and bandanas take the crew colour (shown red).' },
+  { key: 'hitman', name: 'Hitman', opts: { faction: 'hitman' }, desc: 'White shirt, black tie, shades. The suit jacket takes the crew colour (charcoal outside team modes).' },
+  { key: 'sicario', name: 'Sicario', opts: { faction: 'sicario' }, desc: 'Woodland camo, balaclava, boots. The plate carrier takes the crew colour (olive outside team modes). Also the Colectivo streak crew.' },
+  { key: 'cop', name: 'Police officer', opts: { faction: 'cop' }, desc: 'Navy trousers, duty belt, peaked cap. The uniform shirt takes the crew colour (light blue outside team modes). Also the LAPD / NYPD / CRS crews.' },
 ];
+const CREW_SLOTS = [['tdm-blue', 'TDM blue crew', TEAM_COLORS[0]], ['tdm-red', 'TDM red crew', TEAM_COLORS[1]],
+  ...FFA_COLORS.map((c, i) => ['ffa-' + (i + 1), 'FFA slot ' + (i + 1) + (i === 0 ? ' (you)' : ''), c])];
+/** All six painted figures side by side in one crew colour. */
+function crewLineup(color) {
+  const g = new THREE.Group();
+  [['gang', 'hood'], ['gang', 'cap'], ['gang', 'bandana'], ['hitman'], ['sicario'], ['cop']].forEach(([faction, hat], i) => {
+    const m = new CharacterModel({ rng: new RNG(5), faction, hat, plastic: color }); m.setGun(i % 2 ? WEAPONS.nine : WEAPONS.chopper);
+    const o = posed(m); o.position.x = (i - 2.5) * 0.95; g.add(o);
+  });
+  return g;
+}
 function characterItems() {
   const items = CHARACTERS.map((c) => ({
     id: 'character:' + c.key, name: c.name, category: 'Characters', group: 'Humans', view: 'front', desc: c.desc,
     tags: ['character', 'bot', c.opts.faction, 'rig'], source: 'src/game/character.js · CharacterModel',
     build: () => { const m = new CharacterModel({ rng: new RNG(5), ...c.opts }); m.setGun(WEAPONS.chopper); return posed(m); },
-    info: [['Faction', c.opts.faction], ['Bot spawn weight', `${Math.round((FACTIONS.filter((f) => f === c.opts.faction).length / FACTIONS.length) * 100)}% of bots`], ['Skin tones', SKIN_TONES.length + ' variants'], ['Hitboxes', HITBOX]],
-    notes: RIG_NOTES + (c.opts.faction === 'gang' ? ` Hoodie colours: ${HOODIE_COLORS.join(', ')}. In TDM the accent colour becomes the crew colour (blue ${TEAM_COLORS[0]}, red ${TEAM_COLORS[1]}).` : ''),
+    info: [['Faction', c.opts.faction], ['Bot spawn weight', `${Math.round((FACTIONS.filter((f) => f === c.opts.faction).length / FACTIONS.length) * 100)}% of bots`], ['Skin tone', 'Painted on the figure'], ['Hitboxes', HITBOX]],
+    notes: RIG_NOTES + ` Painted miniature (public/models/fig_*.glb): the main garment is a key-colour mask that takes the crew colour — TDM blue ${TEAM_COLORS[0]} / red ${TEAM_COLORS[1]}, the FFA slot colour, or the faction default ${FACTION_PLASTIC[c.opts.faction]}. See the Crew colours group for every slot.`,
   }));
+  for (const [id, name, color] of CREW_SLOTS) items.push({
+    id: 'crew:' + id, name: 'Crew colours — ' + name, category: 'Characters', group: 'Crew colours', view: 'front', frame: { center: V(0, 0.95, 0), radius: 2.75, minY: 0 }, desc: `All six figures with their garment in ${color}.`,
+    tags: ['team', 'colour', 'crew', id], source: 'src/game/character.js · paintedMat(map, tint)', build: () => crewLineup(color),
+    info: [['Colour', color], ['Used in', id.startsWith('tdm') ? 'Team Deathmatch' : 'Free For All and Gun Game (one slot per player)']],
+    notes: 'Visual only. The tint multiplies the greyscale garment, so the painted wash and highlights stay.',
+  });
   items.push({
     id: 'character:pitbull', name: 'Pitbull', category: 'Characters', group: 'Animals', view: 'iso', desc: 'Attack dog from the PITBULL and GATOR SEASON streaks. Hunts the nearest enemy.',
     tags: ['dog', 'streak', 'animal'], source: 'src/game/character.js · CharacterModel.makeDog',
     build: () => { const m = new CharacterModel({ rng: new RNG(2) }); m.makeDog(); m.updateDog(0.1, { speed: 0, moving: false, onGround: true, pitch: 0, dead: false }); m.group.traverse((o) => { if (o.isMesh) o.castShadow = true; }); return m.group; },
     info: [['Used by', 'Pitbull, Gator Season streaks'], ['Animation', 'Four-leg gallop cycle, head pitch, death roll']], notes: 'Origin at the feet, forward +Z. Legs are four pivots under the torso.',
   });
+  // generated streak units (toy reskin); each falls back to an empty slot when models aren't loaded
+  const unit = (id, tint) => () => { const g = new THREE.Group(); const m = unitMesh(id, tint); if (m) g.add(m); return g; };
+  for (const [id, name, desc, used, tint] of [
+    ['heli', 'Police helicopter', 'GHETTO BIRD: circles the block at 32 m with a spotlight, gunning enemies. A two-blade rotor spins on the molded mast in game.', 'Ghetto Bird', null],
+    ['lowrider', 'Armored lowrider', 'LOW RIDER: plows down the lane the caller is aiming at. The body paint takes the caller\'s colour.', 'Low Rider', TEAM_COLORS[1]],
+    ['driveby', 'Drive-by sedan', 'Drive-by car with a crew member leaning out of the back window. The body paint takes the caller\'s colour.', 'Drive-by', TEAM_COLORS[0]],
+    ['nest', 'Sandbag nest', 'ROOFTOP SHOOTER: sandbag emplacement with a mounted gun; turns with the crouched gunner inside.', 'Rooftop Shooter', null],
+    ['gator', 'Alligator', 'GATOR SEASON: runs the streets hunting enemies on the pitbull\'s rig and AI.', 'Gator Season', null],
+    ['brass', 'Brass band', 'BRASS BAND: a second line that draws every enemy toward the decoy. Band uniforms take the caller\'s colour.', 'Brass Band', TEAM_COLORS[0]],
+  ]) items.push({ id: 'streak:' + id, name, category: 'Characters', group: 'Streak units', view: 'iso', desc, tags: ['streak', 'unit', id], source: 'src/game/match.js · unitMesh(\'' + id + '\')', build: unit(id, tint), info: [['Used by', used], ['Model', 'Generated playset mesh (public/models/prop_' + id + '.glb)']], notes: 'Visual only: spawning, damage and timing are unchanged.' });
   items.push({
     id: 'character:fp-hands', name: 'First-person hands', category: 'Characters', group: 'View model', view: 'low', grounded: false, desc: 'The player\'s hands and sleeves holding the current weapon in first person.',
     tags: ['viewmodel', 'first person', 'hands', 'arms'], source: 'src/game/viewmodel.js · ViewModel',
-    build: () => { const holder = new THREE.Object3D(); const vm = new ViewModel(holder, { skin: SKIN_TONES[2], sleeve: '#2b2b2b' }); vm.setWeapon(WEAPONS.stick); holder.remove(vm.root); vm.root.visible = true; vm.root.position.set(0, 0, 0); return vm.root; },
-    info: [['Rendered in', 'Separate view-model scene, 52° camera, drawn over the world'], ['Sleeve colour', 'Player accent colour']],
+    build: () => { const holder = new THREE.Object3D(); const vm = new ViewModel(holder, { skin: '#7b4b2f', plastic: TEAM_COLORS[0] }); vm.setWeapon(WEAPONS.stick); holder.remove(vm.root); vm.root.visible = true; vm.root.position.set(0, 0, 0); return vm.root; },
+    info: [['Rendered in', 'Separate view-model scene, 52° camera, drawn over the world'], ['Colours', 'Skin tone of the player figure, sleeve in the crew colour']],
     notes: 'Gun sits in gunHolder (rotated 180° so the barrel points down −Z, away from the camera). Right hand at the grip (z = len × 0.2), left hand on the fore-end. Animated in code: sway, bob, ADS, sprint, reload, swap, slide, crawl, recoil.',
   });
   return items;
@@ -106,7 +134,7 @@ const PROP_INFO = {
 };
 const PROP_NAMES = { ac: 'AC unit', neonSign: 'Neon sign', trafficlight: 'Traffic light', busstop: 'Bus stop', phonebooth: 'Phone booth', newsstand: 'Newsstand', stopsign: 'Stop sign', watertower: 'Water tower', deadtree: 'Dead tree', trashcan: 'Trash can', trashpile: 'Trash pile', jersey: 'Jersey barrier', barrier: 'Concrete barrier', hoop: 'Basketball hoop', court: 'Sports court', dish: 'Satellite dish', picnic: 'Picnic table', tires: 'Tyre stack', cart: 'Shopping cart', pipes: 'Pipe stack', pallet: 'Pallet', tomb: 'Tomb', grave: 'Gravestone' };
 const PROP_VIEW = { court: 'top', laundry: 'front', billboard: 'front', neonSign: 'front', sign: 'front', stopsign: 'front', overpass: 'iso' };
-function propBuilder() { return new MapBuilder({ id: 'catalog', size: 160, seed: 3, lightBudget: 0 }); }
+function propBuilder() { return new MapBuilder({ id: 'catalog', size: 160, seed: 3, lightBudget: 0, immediateKit: true }); }
 function colliderSize(world) {
   if (!world.boxes.length) return 'none (visual only)';
   const b = new THREE.Box3(); for (const x of world.boxes) b.union(new THREE.Box3(x.min, x.max)); const s = b.getSize(V());
@@ -183,7 +211,7 @@ function vfxItems() {
   items.push({ size2d: '~5 m blast radius', sizeM: 10, id: 'vfx:explosion', name: 'Explosion', category: 'VFX', group: 'Explosions', view: 'iso', grounded: false, background: BLACK, desc: 'Grenade / streak explosion: fireball sparks, smoke, flash sprite and a light.', tags: ['vfx', 'explosion', 'grenade'], source: 'src/core/engine.js · FX.explosion', frame: { center: V(0, 1.2, 0), radius: 4 }, build: () => container((fx) => fx.explosion(V(0, 0.4, 0), 5), [0.06, 0.06]), live: { every: 1.6, spawn: (fx) => fx.explosion(V(0, 0.4, 0), 5) }, info: [['Particles', '40 fire + 30 smoke'], ['Flash', '0.25 s sprite + light']] });
   items.push({ size2d: '~6 m cloud radius', sizeM: 12, id: 'vfx:smoke', name: 'Smoke grenade cloud', category: 'VFX', group: 'Explosions', view: 'iso', grounded: false, background: '#2a2d33', desc: 'Smoke grenade cloud that blocks bot vision for 14 s.', tags: ['vfx', 'smoke'], source: 'src/core/engine.js · FX.smoke', frame: { center: V(0, 2, 0), radius: 5 }, build: () => container((fx) => fx.smoke(V(), 6, 14), [1, 1, 1]), info: [['Sprites', 14], ['Life', '14 s']] });
   items.push({ size2d: '~0.5 m debris spray', sizeM: 0.5, id: 'vfx:impact', name: 'Bullet impact', category: 'VFX', group: 'Impacts', view: 'iso', grounded: false, background: BLACK, desc: 'Surface hit: debris particles and a dust puff.', tags: ['vfx', 'impact', 'bullet'], source: 'src/core/engine.js · FX.impact', frame: { center: V(0, 0.3, 0.3), radius: 1 }, build: () => container((fx) => fx.impact(V(0, 0.2, 0), V(0, 0.3, 1).normalize(), 'concrete'), [0.05]), live: { every: 0.5, spawn: (fx) => fx.impact(V(0, 0.2, 0), V(0, 0.3, 1).normalize(), 'concrete') } });
-  items.push({ size2d: '~1 m spray', sizeM: 1, id: 'vfx:blood', name: 'Blood hit', category: 'VFX', group: 'Impacts', view: 'iso', grounded: false, background: BLACK, desc: 'Player / bot hit splash.', tags: ['vfx', 'blood', 'hit'], source: 'src/core/engine.js · FX.blood', frame: { center: V(0, 1, 0), radius: 1.2 }, build: () => container((fx) => fx.blood(V(0, 1, 0)), [0.06]), live: { every: 0.6, spawn: (fx) => fx.blood(V(0, 1, 0)) } });
+  items.push({ size2d: '~1 m spray', sizeM: 1, id: 'vfx:blood', name: 'Plastic chip hit', category: 'VFX', group: 'Impacts', view: 'iso', grounded: false, background: BLACK, desc: 'Player / bot hit: a spray of chips in the victim\'s plastic colour plus white stress flecks (toy reskin; replaces the blood splash).', tags: ['vfx', 'hit', 'chips', 'plastic'], source: 'src/core/engine.js · FX.blood', frame: { center: V(0, 1, 0), radius: 1.2 }, build: () => container((fx) => fx.blood(V(0, 1, 0)), [0.06]), live: { every: 0.6, spawn: (fx) => fx.blood(V(0, 1, 0)) } });
   return items;
 }
 

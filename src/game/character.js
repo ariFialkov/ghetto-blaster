@@ -1,23 +1,95 @@
 // Procedural humanoid rig + gun meshes. No external models; everything is boxes with a simple joint hierarchy.
+// Toy reskin, painted-miniature pass: generated figures, guns and the dog are hand-painted matte minis (Meshy textures).
+// A figure's main garment is painted in a key colour that the game swaps for the team / FFA slot / faction colour, so
+// teams still read at a glance. Box fallbacks, throwables and armour plates are plain matte paint in that colour.
 import * as THREE from 'three';
-import { SKIN_TONES, HOODIE_COLORS } from './names.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { MODELS, figureKey, propMaterial } from './models.js';
+import { Figure } from './figure.js';
+import { scaledFit } from './gunfit.js';
 import { clamp, damp } from '../core/rng.js';
+import { SKIN_TONES, HOODIE_COLORS } from './names.js';
+const SKIN_TONE_SLOTS = SKIN_TONES, HOODIE_SLOTS = HOODIE_COLORS; // only used to replay the legacy RNG draws
 
-const matCache = new Map();
-const M = (c, r = 0.85, m = 0.02) => { const k = c + r + m; if (!matCache.has(k)) matCache.set(k, new THREE.MeshStandardMaterial({ color: new THREE.Color(c), roughness: r, metalness: m })); return matCache.get(k); };
-const bx = (w, h, d, mat, x = 0, y = 0, z = 0) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = false; return m; };
-
-export const TEAM_COLORS = ['#3b82f6', '#ef4444'];
+// ---- plastic ----
+export const TEAM_COLORS = ['#1e4fc0', '#b3271f']; // cobalt crew, crimson crew
+export const FFA_COLORS = ['#1040bb', '#b12522', '#c2b9b4', '#da9b03', '#eb5404', '#611b96', '#04867e', '#68c41d', '#cf1477', '#505255'];
+export const FACTION_PLASTIC = { gang: '#1e4fc0', hitman: '#2a2824', sicario: '#565a2a', cop: '#6a87a3', dog: '#3e3e42' };
+export const DEFAULT_GUN_PLASTIC = '#1e4fc0';
+const plasticMats = new Set();
+const PLASTIC_ENV = 0.3;
+let PLASTIC_LOW = false;
+/** Low quality: plain standard material instead of the clear-coated physical one (cheaper on mobile GPUs). */
+export function setPlasticQuality(q) { PLASTIC_LOW = q === 'low'; }
+const plasticCache = new Map();
+/** Glossy injection-molded plastic. shade < 1 darkens (recesses, eyes), > 1 lightens. */
+export function plasticMat(c, shade = 1, rough = 0.32) {
+  const k = c + '|' + shade + '|' + rough;
+  if (!plasticCache.has(k)) {
+    const col = new THREE.Color(c); if (shade !== 1) col.multiplyScalar(shade);
+    // saturated base under a glossy clear coat: the gloss comes from the coat, so the colour never washes out
+    const m = PLASTIC_LOW ? new THREE.MeshStandardMaterial({ color: col, roughness: rough + 0.05, metalness: 0 })
+      : new THREE.MeshPhysicalMaterial({ color: col, roughness: 0.55 + (rough - 0.32), metalness: 0, clearcoat: 0.85, clearcoatRoughness: 0.18 });
+    if (GUN_ENV) { m.envMap = GUN_ENV; m.envMapIntensity = PLASTIC_ENV; }
+    plasticMats.add(m); plasticCache.set(k, m);
+  }
+  return plasticCache.get(k);
+}
+const paintedCache = new Map();
+/** Painted miniature: the model's own texture, matte. Texels with alpha 0 (the figure's key garment) are multiplied by
+ *  `tint`; everything else keeps its paint. `shade` darkens the whole thing (first-person view model). */
+export function paintedMat(map, tint = null, shade = 1) {
+  const k = (map ? map.uuid : 'none') + '|' + (tint || '-') + '|' + shade;
+  if (!paintedCache.has(k)) {
+    const m = new THREE.MeshStandardMaterial({ map, color: new THREE.Color(shade, shade, shade), roughness: 0.82, metalness: 0 });
+    const uTint = { value: new THREE.Color(tint || '#ffffff') };
+    m.userData.painted = true; m.userData.tint = uTint;
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uTint = uTint;
+      sh.fragmentShader = 'uniform vec3 uTint;\n' + sh.fragmentShader.replace('#include <map_fragment>', '#ifdef USE_MAP\n vec4 paintTexel = texture2D( map, vMapUv );\n diffuseColor.rgb *= mix( paintTexel.rgb * uTint, paintTexel.rgb, smoothstep( 0.35, 0.65, paintTexel.a ) );\n#endif');
+    };
+    m.customProgramCacheKey = () => 'painted-mini';
+    paintedCache.set(k, m);
+  }
+  return paintedCache.get(k);
+}
+const matteCache = new Map();
+/** Plain matte paint (armour plates, collars, throwables, box fallbacks next to painted figures). */
+export function matteMat(c, shade = 1) {
+  const k = c + '|' + shade;
+  if (!matteCache.has(k)) { const col = new THREE.Color(c); if (shade !== 1) col.multiplyScalar(shade); matteCache.set(k, new THREE.MeshStandardMaterial({ color: col, roughness: 0.8, metalness: 0 })); }
+  return matteCache.get(k);
+}
+/** Painted skin tone of each generated figure (first-person hands match the player's own figure). */
+export const FIGURE_SKIN = { hood: '#7b4b2f', cap: '#b9875f', bandana: '#4f2f1d', hitman: '#d9ac8a', sicario: '#1d1d20', cop: '#4b2c1c' };
+const rbCache = new Map();
+/** Soft-edged box so parts read as molded rather than voxel. */
+function rbGeo(w, h, d) {
+  const k = w.toFixed(3) + ',' + h.toFixed(3) + ',' + d.toFixed(3);
+  if (!rbCache.has(k)) rbCache.set(k, new RoundedBoxGeometry(w, h, d, 2, Math.min(w, h, d) * 0.22));
+  return rbCache.get(k);
+}
+const bx = (w, h, d, mat, x = 0, y = 0, z = 0) => { const m = new THREE.Mesh(rbGeo(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = false; return m; };
 
 let GUN_ENV = null;
 const gunMats = new Set();
-/** Reflection map for weapon materials (set once by the engine). */
-export function setGunEnvironment(t) { GUN_ENV = t; for (const m of gunMats) { m.envMap = t; m.envMapIntensity = 0.85; m.needsUpdate = true; } }
-function gunEnv(group) { group.traverse((o) => { if (o.isMesh && o.material && !gunMats.has(o.material)) { gunMats.add(o.material); if (GUN_ENV) { o.material.envMap = GUN_ENV; o.material.envMapIntensity = 0.85; o.material.needsUpdate = true; } } }); return group; }
+/** Reflection map for weapon and plastic materials (set once by the engine). */
+export function setGunEnvironment(t) { GUN_ENV = t; for (const m of gunMats) { m.envMap = t; m.envMapIntensity = 0.85; m.needsUpdate = true; } for (const m of plasticMats) { m.envMap = t; m.envMapIntensity = PLASTIC_ENV; m.needsUpdate = true; } }
+function gunEnv(group) { group.traverse((o) => { if (o.isMesh && o.material && !gunMats.has(o.material) && !plasticMats.has(o.material)) { gunMats.add(o.material); if (GUN_ENV) { o.material.envMap = GUN_ENV; o.material.envMapIntensity = 0.85; o.material.needsUpdate = true; } } }); return group; }
 
-export function buildGunMesh(w) {
+export function buildGunMesh(w, plastic = DEFAULT_GUN_PLASTIC, shade = 1) {
   const d = w.model; const g = new THREE.Group();
-  const metal = M(d.metal || '#2a2a2a', 0.5, 0.6), body = M(d.color || '#2a2a2a', 0.6, 0.4);
+  const body = plasticMat(plastic, shade, 0.3), metal = plasticMat(plastic, 0.78 * shade, 0.36);
+  const gen = MODELS.guns.get(w.id);
+  if (gen) { // generated mesh, pre-oriented barrel +Z; scaled to the real gun's length (src/game/gunfit.js)
+    const mat = gen.map ? paintedMat(gen.map, null, shade) : body;
+    const m = gen.scene.clone(); m.traverse((o) => { if (o.isMesh) { o.material = mat; o.castShadow = true; } }); g.add(m);
+    if (gen.len === undefined) { const bb = new THREE.Box3().setFromObject(gen.scene); gen.len = bb.max.z - bb.min.z; }
+    const fit = scaledFit(w.id, 1); const k = fit && gen.len > 0 ? fit.real / gen.len : 1;
+    m.scale.setScalar(k);
+    g.userData.fit = fit ? scaledFit(w.id, k) : null;
+    g.userData.muzzle = new THREE.Vector3(...gen.muzzle).multiplyScalar(k); g.userData.pistol = !!d.pistol; return g;
+  }
   const h = d.h, len = d.len;
   if (d.pistol) {
     g.add(bx(0.04, h * 0.6, len, metal, 0, 0, len / 2)); // slide
@@ -37,7 +109,7 @@ export function buildGunMesh(w) {
   g.add(bx(0.04, 0.12, 0.045, body, 0, -h / 2 - 0.06, len * 0.22)); // grip
   if (d.mag) { const m = bx(0.04, d.mag, 0.07, metal, 0, -h / 2 - d.mag / 2, len * 0.42); if (d.magCurve) m.rotation.x = 0.35; g.add(m); }
   if (d.drum) { const c = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.06, 12), metal); c.rotation.z = Math.PI / 2; c.position.set(0, -h / 2 - 0.06, len * 0.42); g.add(c); }
-  if (d.box) g.add(bx(0.09, 0.12, 0.14, M('#4a5a3a', 0.9), 0, -h / 2 - 0.06, len * 0.4));
+  if (d.box) g.add(bx(0.09, 0.12, 0.14, metal, 0, -h / 2 - 0.06, len * 0.4));
   if (d.scope) { const s = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, d.scope, 8), metal); s.rotation.x = Math.PI / 2; s.position.set(0, h / 2 + 0.035, len * 0.45); g.add(s); g.add(bx(0.03, 0.03, 0.03, metal, 0, h / 2 + 0.015, len * 0.45)); }
   else if (d.rail) g.add(bx(0.02, 0.03, 0.08, metal, 0, h / 2 + 0.015, len * 0.3));
   else g.add(bx(0.012, 0.03, 0.012, metal, 0, h / 2 + 0.015, len * 0.1)); // iron sight
@@ -47,28 +119,36 @@ export function buildGunMesh(w) {
   return gunEnv(g);
 }
 
-export function buildThrowableMesh(eq) {
-  const c = eq.color || '#555';
-  if (eq.shape === 'can') { const m = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.12, 8), M(c, 0.5, 0.5)); return m; }
-  if (eq.shape === 'ball') { const m = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), M(c, 0.7, 0.3)); return m; }
-  if (eq.shape === 'axe') { const g = new THREE.Group(); g.add(bx(0.02, 0.02, 0.4, M('#5a3a1a'), 0, 0, 0)); g.add(bx(0.03, 0.14, 0.1, M('#aaa', 0.3, 0.8), 0, 0.06, 0.15)); return g; }
-  if (eq.shape === 'bottle') { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.2, 8), M('#5a8a3a', 0.2, 0.3))); const f = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), new THREE.MeshStandardMaterial({ color: '#ffb020', emissive: '#ff7000', emissiveIntensity: 2 })); f.position.y = 0.15; g.add(f); return g; }
-  return new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.16), M(c, 0.7, 0.3));
+export function buildThrowableMesh(eq, plastic = DEFAULT_GUN_PLASTIC) {
+  const pm = matteMat(plastic, 1), pd = matteMat(plastic, 0.78);
+  if (eq.shape === 'can') { const m = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.12, 10), pm); return m; }
+  if (eq.shape === 'ball') { const m = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), pm); return m; }
+  if (eq.shape === 'axe') { const g = new THREE.Group(); g.add(bx(0.02, 0.02, 0.4, pd, 0, 0, 0)); g.add(bx(0.03, 0.14, 0.1, pm, 0, 0.06, 0.15)); return g; }
+  if (eq.shape === 'bottle') { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.2, 10), pm)); const f = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), new THREE.MeshStandardMaterial({ color: '#ffb020', emissive: '#ff7000', emissiveIntensity: 2 })); f.position.y = 0.15; g.add(f); return g; }
+  return bx(0.12, 0.08, 0.16, pm);
 }
 
 /** Humanoid rig. forward = +Z local. */
 export class CharacterModel {
-  constructor({ faction = 'gang', team = null, accent = null, rng, big = false, shirt: shirtColor = null, pants: pantsColor = null, hat: hatOverride = undefined }) {
+  constructor({ faction = 'gang', team = null, accent = null, plastic = null, rng, big = false, shirt: shirtColor = null, pants: pantsColor = null, hat: hatOverride = undefined }) {
     this.group = new THREE.Group();
     this.faction = faction;
-    const skin = M(rng ? rng.pick(SKIN_TONES) : SKIN_TONES[2], 0.7);
-    const acc = accent || (team !== null && team !== undefined ? TEAM_COLORS[team] : '#ffd166');
-    let shirt, pants, shoes, headMat, hat = null, extra = [];
-    if (faction === 'gang') { shirt = M(rng && rng.chance(0.5) ? acc : rng ? rng.pick(HOODIE_COLORS) : '#2b2b2b', 0.95); pants = M(rng && rng.chance(0.5) ? '#2a3a5a' : '#1e1e1e', 0.95); shoes = M('#eee', 0.6); headMat = skin; hat = rng && rng.chance(0.6) ? (rng.chance(0.5) ? 'hood' : 'cap') : 'bandana'; }
-    else if (faction === 'hitman') { shirt = M('#111', 0.7); pants = M('#111', 0.7); shoes = M('#111', 0.3, 0.3); headMat = skin; hat = 'glasses'; extra.push(['tie', M('#fff', 0.8)]); }
-    else if (faction === 'sicario') { shirt = M('#1a1a1a', 0.95); pants = M('#5a5a3a', 0.95); shoes = M('#222', 0.8); headMat = M('#111', 0.95); extra.push(['vest', M('#4a5a3a', 0.95)]); }
-    else { shirt = M('#4f7fbf', 0.9); pants = M('#1a2340', 0.9); shoes = M('#111', 0.5); headMat = skin; hat = 'cap'; extra.push(['badge', M('#ffd166', 0.3, 0.8)], ['belt', M('#111', 0.5)]); }
-    if (shirtColor) shirt = M(shirtColor, 0.9); if (pantsColor) pants = M(pantsColor, 0.9); if (hatOverride !== undefined) hat = hatOverride;
+    // one plastic colour for the whole figure: explicit > team > faction
+    const base = plastic || shirtColor || (team !== null && team !== undefined ? TEAM_COLORS[team] : (FACTION_PLASTIC[faction] || FACTION_PLASTIC.gang));
+    const P = (shade = 1, r = 0.32) => plasticMat(base, shade, r);
+    const acc = accent || base;
+    const skin = P(1);
+    let shirt = P(1), pants = P(0.9), shoes = P(0.82), headMat = P(1), hat = null; const extra = [];
+    // Keep the exact random draws the old skin/clothing code made: the same RNG drives the bot's AI afterwards,
+    // so changing how many numbers are consumed here would change every pre-planned match outcome.
+    if (rng) { rng.pick(SKIN_TONE_SLOTS); if (faction === 'gang') { if (!rng.chance(0.5)) rng.pick(HOODIE_SLOTS); rng.chance(0.5); } }
+    if (faction === 'gang') { hat = rng && rng.chance(0.6) ? (rng.chance(0.5) ? 'hood' : 'cap') : 'bandana'; }
+    else if (faction === 'hitman') { hat = 'glasses'; extra.push(['tie', P(1.25)]); }
+    else if (faction === 'sicario') { headMat = P(0.95); extra.push(['vest', P(0.86)]); }
+    else { hat = 'cap'; extra.push(['badge', P(1.35)], ['belt', P(0.72)]); }
+    if (hatOverride !== undefined) hat = hatOverride;
+    this.hat = hat; // remembered so the results podium can rebuild the same figure
+    this.plastic = base;
     this.accent = acc;
     const s = big ? 1.15 : 1;
     // hierarchy
@@ -78,16 +158,16 @@ export class CharacterModel {
     // arms (shoulder pivots)
     this.armR = new THREE.Group(); this.armR.position.set(-0.3 * s, 0.56 * s, 0); this.torso.add(this.armR);
     this.armL = new THREE.Group(); this.armL.position.set(0.3 * s, 0.56 * s, 0); this.torso.add(this.armL);
-    for (const [arm, side] of [[this.armR, -1], [this.armL, 1]]) { arm.add(bx(0.13 * s, 0.3 * s, 0.13 * s, shirt, 0, -0.15 * s, 0)); const fore = bx(0.11 * s, 0.3 * s, 0.11 * s, faction === 'sicario' ? shirt : skin, 0, -0.44 * s, 0); arm.add(fore); const hand = bx(0.1 * s, 0.1 * s, 0.1 * s, faction === 'sicario' ? M('#111') : skin, 0, -0.62 * s, 0); arm.add(hand); }
+    for (const [arm, side] of [[this.armR, -1], [this.armL, 1]]) { arm.add(bx(0.13 * s, 0.3 * s, 0.13 * s, shirt, 0, -0.15 * s, 0)); const fore = bx(0.11 * s, 0.3 * s, 0.11 * s, skin, 0, -0.44 * s, 0); arm.add(fore); const hand = bx(0.1 * s, 0.1 * s, 0.1 * s, P(0.95), 0, -0.62 * s, 0); arm.add(hand); }
     // head
     this.neck = new THREE.Group(); this.neck.position.y = 0.64 * s; this.torso.add(this.neck);
     const head = bx(0.26 * s, 0.28 * s, 0.26 * s, headMat, 0, 0.16 * s, 0); this.neck.add(head); this.headMesh = head;
-    if (hat === 'hood') { const h = bx(0.3 * s, 0.32 * s, 0.3 * s, shirt, 0, 0.17 * s, -0.03 * s); this.neck.add(h); const face = bx(0.2 * s, 0.2 * s, 0.03 * s, skin, 0, 0.14 * s, 0.14 * s); this.neck.add(face); }
-    else if (hat === 'cap') { this.neck.add(bx(0.28 * s, 0.1 * s, 0.28 * s, faction === 'cop' ? M('#1a2340') : M(acc, 0.9), 0, 0.28 * s, 0)); this.neck.add(bx(0.26 * s, 0.03 * s, 0.14 * s, faction === 'cop' ? M('#111') : M(acc, 0.9), 0, 0.25 * s, 0.18 * s)); }
-    else if (hat === 'bandana') { this.neck.add(bx(0.27 * s, 0.07 * s, 0.27 * s, M(acc, 0.9), 0, 0.26 * s, 0)); }
-    else if (hat === 'glasses') { this.neck.add(bx(0.24 * s, 0.05 * s, 0.03 * s, M('#111', 0.2, 0.5), 0, 0.19 * s, 0.14 * s)); }
+    if (hat === 'hood') { const h = bx(0.3 * s, 0.32 * s, 0.3 * s, shirt, 0, 0.17 * s, -0.03 * s); this.neck.add(h); const face = bx(0.2 * s, 0.2 * s, 0.03 * s, P(0.8), 0, 0.14 * s, 0.14 * s); this.neck.add(face); }
+    else if (hat === 'cap') { this.neck.add(bx(0.28 * s, 0.1 * s, 0.28 * s, P(0.92), 0, 0.28 * s, 0)); this.neck.add(bx(0.26 * s, 0.03 * s, 0.14 * s, P(0.85), 0, 0.25 * s, 0.18 * s)); }
+    else if (hat === 'bandana') { this.neck.add(bx(0.27 * s, 0.07 * s, 0.27 * s, P(0.88), 0, 0.26 * s, 0)); this.neck.add(bx(0.24 * s, 0.1 * s, 0.05 * s, P(0.88), 0, 0.08 * s, 0.13 * s)); }
+    else if (hat === 'glasses') { this.neck.add(bx(0.24 * s, 0.05 * s, 0.03 * s, P(0.35, 0.12), 0, 0.19 * s, 0.14 * s)); }
     // eyes
-    for (const e of [-0.06, 0.06]) if (faction !== 'sicario' && hat !== 'glasses') { const eye = bx(0.03 * s, 0.03 * s, 0.01, M('#111'), e * s, 0.19 * s, 0.135 * s); this.neck.add(eye); }
+    for (const e of [-0.06, 0.06]) if (faction !== 'sicario' && hat !== 'glasses') { const eye = bx(0.03 * s, 0.03 * s, 0.012, P(0.4), e * s, 0.19 * s, 0.135 * s); this.neck.add(eye); }
     for (const [kind, m] of extra) {
       if (kind === 'tie') this.torso.add(bx(0.06 * s, 0.4 * s, 0.01, m, 0, 0.36 * s, 0.135 * s));
       if (kind === 'vest') this.torso.add(bx(0.5 * s, 0.46 * s, 0.32 * s, m, 0, 0.34 * s, 0));
@@ -106,11 +186,23 @@ export class CharacterModel {
     this.adsBlend = 0; this.crouchBlend = 0; this.sprintBlend = 0;
     this.group.traverse((o) => { if (o.isMesh) { o.castShadow = true; } });
     this.shadowOnly = false;
+    // generated skinned figure: the box rig stays as the (invisible) animation driver
+    const tpl = MODELS.figures.get(figureKey(faction, hat));
+    this.skinTone = FIGURE_SKIN[figureKey(faction, hat)] || FIGURE_SKIN.hood;
+    const painted = tpl && tpl.userData.paint;
+    // Trap House Armor plates: the crew colour, painted darker (molded darker on unpainted figures)
+    this.armorMat = painted ? matteMat(base, 0.45) : P(1).clone(); if (!painted) { this.armorMat.color.multiplyScalar(0.45); this.armorMat.roughness = 0.55; }
+    if (tpl) { const fig = new Figure(tpl, painted ? paintedMat(tpl.userData.paint, base) : P(1), s); if (fig.ok) { this.group.traverse((o) => { if (o.isMesh) o.visible = false; }); this.figure = fig; this.group.add(fig.root); } }
   }
   setGun(weapon) {
     if (this.gunMesh) { this.gunMount.remove(this.gunMesh); }
-    this.gunMesh = weapon ? buildGunMesh(weapon) : null;
+    this.gunMesh = weapon ? buildGunMesh(weapon, this.plastic) : null;
     if (this.gunMesh) { this.gunMount.add(this.gunMesh); this.gunIsPistol = !!this.gunMesh.userData.pistol; }
+    this.fit = this.figure && this.gunMesh ? this.gunMesh.userData.fit : null; // fitted hold (figures + generated guns)
+    if (this.fit) { const a = this.fit.hold === 'rifle' ? this.fit.butt : this.fit.grip; this.gunMesh.position.set(0, -a[1], -a[0]); }
+    if (weapon) { const d = weapon.model, h = d.h, len = d.len; this.grips = d.pistol
+      ? { Right: new THREE.Vector3(0, -h * 0.3 - 0.06, len * 0.25), Left: new THREE.Vector3(0.035, -h * 0.3 - 0.09, len * 0.2), mag: new THREE.Vector3(0, -h * 0.3 - 0.16, len * 0.25) }
+      : { Right: new THREE.Vector3(0, -h / 2 - 0.05, len * 0.22), Left: new THREE.Vector3(0, -h * 0.35, Math.min(len * 0.42, len - 0.05)), mag: new THREE.Vector3(0, -h / 2 - 0.2, len * 0.42) }; }
   }
   muzzleWorld(out) { if (this.isDog) return out.set(0, 0.6, 0.6).applyMatrix4(this.group.matrixWorld); if (!this.gunMesh) return out.set(0, 1.4, 0).applyMatrix4(this.group.matrixWorld); return out.copy(this.gunMesh.userData.muzzle).applyMatrix4(this.gunMesh.matrixWorld); }
   /** state: { speed (m/s), moving(bool), sprint, crouch, ads, onGround, pitch, lean(-1..1), dead, reloading, firing } */
@@ -125,7 +217,7 @@ export class CharacterModel {
       this.hips.position.y = (0.95 - ease * 0.72) * s;
       this.torso.rotation.set(0, 0, 0); this.neck.rotation.set(0, 0, 0);
       this.legL.rotation.x = ease * 0.3; this.legR.rotation.x = -ease * 0.2; this.armL.rotation.x = -ease * 1.2; this.armR.rotation.x = -ease * 0.8; this.armL.rotation.z = ease * 1.2; this.armR.rotation.z = -ease * 0.6;
-      return;
+      this._melt(); this._applyFigure(st); return;
     }
     this.deathT = 0;
     this.adsBlend = damp(this.adsBlend, st.ads ? 1 : 0, 14, dt);
@@ -167,34 +259,169 @@ export class CharacterModel {
     this.gunMount.position.set(gx, gy, gz);
     this.gunMount.rotation.set(-this.aimPitch * 0.6 + (sprint > 0.5 && !st.ads ? 0.6 : 0) + (st.reloading ? -0.25 : 0), (sprint > 0.5 && !st.ads ? -0.5 : 0), 0);
     if (st.firing) this.gunMount.position.z -= 0.03;
+    if (this.figure && this.fit) this._fitPose(st, s);
+    else {
+      this.neck.rotation.y = 0; this.neck.rotation.z = 0; // undo a previous fitted hold's head turn
+      if (this.figure) { this.gunMount.position.z -= 0.1 * s; this.gunMount.position.y += 0.04 * s; } // stock into the shoulder: the figure's arms are shorter than the box rig's
+    }
+    this._applyFigure(st);
   }
-  makeDog() {
+  /**
+   * Real-world weapon hold for the generated figures (fitted guns only).
+   * Rifles: butt in the right shoulder pocket, body bladed ~34 degrees so the short toy arms reach the handguard, head
+   * turned back to the front; aiming lifts the sight line to the eye and drops the cheek onto the stock.
+   * Pistols: two-handed, arms out, sights at eye level when aiming. Compact guns (no stock): held out at the chest.
+   * The gun mount is placed in the figure's group space, then converted into the torso's local space.
+   */
+  _fitPose(st, s) {
+    const f = this.fit, fig = this.figure, ads = this.adsBlend, spr = this.sprintBlend * (st.ads ? 0 : 1), rl = st.reloading ? 1 : 0;
+    const rifle = f.hold === 'rifle', pistol = f.hold === 'pistol';
+    const blade = (rifle ? -0.6 : pistol ? -0.15 : -0.4) * (1 - spr);
+    this.torso.rotation.y += blade;
+    // head back to the front (set, not added: the box rig doesn't reset the neck's yaw and roll every frame)
+    this.neck.rotation.y = -blade * 0.95;
+    this.neck.rotation.z = rifle ? 0.14 * ads : 0;
+    if (rifle) this.neck.rotation.x += 0.16 * ads; // cheek weld (x is reset by the rig each frame)
+    // torso (posed this frame) in group space
+    const T = this._fT || (this._fT = { inv: new THREE.Matrix4(), tg: new THREE.Matrix4(), m: new THREE.Matrix4(), q: new THREE.Quaternion(), e: new THREE.Euler(0, 0, 0, 'YXZ'), p: new THREE.Vector3(), sh: new THREE.Vector3(), c: new THREE.Vector3(), o: new THREE.Vector3(), one: new THREE.Vector3(1, 1, 1) });
+    this.group.updateMatrixWorld(true);
+    T.inv.copy(this.group.matrixWorld).invert(); T.tg.multiplyMatrices(T.inv, this.torso.matrixWorld);
+    const R = fig.rest, hipY = 0.95 * s;
+    const toG = (v, out) => out.set(v.x, v.y - hipY, v.z).applyMatrix4(T.tg); // a rest-pose group point, carried by the torso
+    toG(R.RightArm.p, T.sh);
+    T.c.copy(R.LeftArm.p).add(R.RightArm.p).multiplyScalar(0.5); toG(T.c, T.c); // shoulder centre
+    const eyeUp = (R.Head.p.y + 0.07 * s) - (R.LeftArm.p.y + R.RightArm.p.y) / 2; // eye height above the shoulders
+    const pitch = this.aimPitch, cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const lift = (dy, dz) => T.o.set(0, dy * cp + dz * sp, -dy * sp + dz * cp); // an offset pitched with the aim (forward = +Z)
+    if (rifle) {
+      // butt plate centre into the pocket just in front of and inside the shoulder joint
+      const sightOver = f.sight - f.butt[1]; // sight line height above the butt centre
+      const dy = clamp(eyeUp - sightOver, -0.05, 0.03) * ads + (-0.03) * (1 - ads);
+      T.p.copy(T.sh).add(T.o.set(0.045 * (1 - spr), 0, 0)).add(lift(dy, 0.1));
+    } else {
+      // grip palm out in front: arms extended for pistols, nearer the chest for compact guns
+      const reach = pistol ? 0.42 : 0.32, sightOver = f.sight - f.grip[1];
+      const dy = (eyeUp - sightOver - 0.015) * ads + (pistol ? -0.06 : -0.1) * (1 - ads);
+      T.p.copy(T.c).add(T.o.set(pistol ? -0.035 - 0.02 * ads : -0.08, 0, 0)).add(lift(dy, reach));
+    }
+    // sprint: rifle low across the body, muzzle down-left; pistols and compacts at a low ready
+    if (spr > 0) { T.o.set(rifle ? -0.02 : -0.06, rifle ? -0.32 : -0.28, rifle ? 0.02 : -0.1).multiplyScalar(spr); T.p.add(T.o); }
+    if (rl) T.p.add(T.o.set(0.02, -0.05, -0.02));
+    if (st.firing) T.p.add(lift(0, -0.02));
+    T.e.set(-pitch + spr * (rifle ? 0.8 : 0.9) - rl * 0.12, spr * (rifle ? 0.75 : 0.25), rl * 0.4 + spr * (rifle ? 0.35 : 0));
+    T.q.setFromEuler(T.e);
+    // into the torso's local space
+    T.m.compose(T.p, T.q, T.one).premultiply(T.inv.copy(T.tg).invert());
+    T.m.decompose(this.gunMount.position, this.gunMount.quaternion, T.o);
+  }
+  _applyFigure(st) {
+    if (this.figure && (st.jugg || this.figure.armor)) this.figure.setArmor(!!st.jugg && !st.dead, this.armorMat);
+    if (!this.figure) return;
+    if (this.fit && this.gunMesh && !st.dead) { this.figure.apply(this, this._fitHands(st)); return; }
+    const hands = this.gunMesh && this.grips ? { obj: this.gunMesh, Right: this.grips.Right, Left: st.reloading ? this._reloadHand(st) : this.grips.Left } : null;
+    this.figure.apply(this, hands);
+  }
+  /** Palm targets in gun space: shooting hand on the grip, support hand as far up the handguard as the arm reaches. */
+  _fitHands(st) {
+    const V3 = (x, y, z) => new THREE.Vector3(x, y, z).normalize();
+    const f = this.fit, H = this._fH || (this._fH = { Right: new THREE.Vector3(), Left: new THREE.Vector3(), sh: new THREE.Vector3(), p: new THREE.Vector3(), inv: new THREE.Matrix4(), palm: 0.075 * this.scale,
+      // hand orientations in gun space (+X = the figure's left, +Y up, +Z towards the muzzle): fingers F, palm normal N
+      RightF: V3(0.2, -0.62, 0.76), RightN: V3(1, 0, 0), LeftF: new THREE.Vector3(), LeftN: new THREE.Vector3() });
+    H.obj = this.gunMesh;
+    // shooting hand: palm on the right side of the grip. The sculpted hands can't curl, so on the short pistol grips the
+    // fingers run forward under the trigger guard (where curled fingers sit); on rifle grips they angle forward and down.
+    const pist = f.hold === 'pistol';
+    H.RightF.copy(pist ? V3(0.1, -0.55, 0.83) : V3(0.2, -0.62, 0.76));
+    H.Right.set(-0.026, f.grip[1], f.grip[0]);
+    if (st.reloading) { H.Left.set(0.034, f.mag[1] + Math.sin((st.reloadT || 0) * 9) * 0.03, f.mag[0]); H.LeftF.copy(V3(-0.1, -0.75, 0.65)); H.LeftN.set(-1, 0, 0); return H; }
+    if (!f.fore) { H.Left.set(0.03, f.grip[1] - 0.014, f.grip[0] - 0.004); H.LeftF.copy(V3(-0.1, -0.6, 0.8)); H.LeftN.set(-1, 0, 0); return H; } // pistols: support hand wraps the shooting hand
+    if (f.vgrip) { H.LeftF.copy(V3(-0.15, -0.55, 0.82)); H.LeftN.set(-1, 0, 0); } // vertical foregrip: wrapped from the left
+    else { H.LeftF.copy(V3(0.25, 0.12, 0.96)); H.LeftN.copy(V3(-0.35, 0.94, 0)); } // handguard: palm up underneath, fingers forward
+    // left shoulder in gun space; choose the farthest handguard point within comfortable reach
+    const fig = this.figure; fig.root.updateMatrixWorld(true); this.gunMesh.updateMatrixWorld(true);
+    H.inv.copy(this.gunMesh.matrixWorld).invert();
+    H.sh.setFromMatrixPosition(fig.b.LeftArm.matrixWorld).applyMatrix4(H.inv);
+    const reach = (fig.len.Left[0] + fig.len.Left[1]) * 0.96 + H.palm, x = f.vgrip ? 0.026 : 0.006, y = f.vgrip ? f.fore[2] : f.fore[2] - 0.024;
+    let z = f.fore[0];
+    for (let i = 0; i <= 8; i++) { const zz = f.fore[1] - (f.fore[1] - f.fore[0]) * (i / 8); if (H.p.set(x, y, zz).distanceTo(H.sh) <= reach) { z = zz; break; } }
+    H.Left.set(x, y, z);
+    return H;
+  }
+  _reloadHand(st) { const v = (this._rh || (this._rh = new THREE.Vector3())).copy(this.grips.mag); v.y += Math.sin((st.reloadT || 0) * 9) * 0.06; return v; }
+  makeDog(gator = false) {
     while (this.group.children.length) this.group.remove(this.group.children[0]);
-    this.isDog = true; const m = M('#4a3a30', 0.95), d = M('#2a2420', 0.95);
+    this.figure = null; this.isDog = true; const m = plasticMat(FACTION_PLASTIC.dog, 1, 0.3), d = plasticMat(FACTION_PLASTIC.dog, 0.6, 0.35);
     this.hips = new THREE.Group(); this.hips.position.y = 0.55; this.group.add(this.hips);
     this.torso = new THREE.Group(); this.hips.add(this.torso);
     this.torso.add(bx(0.32, 0.34, 0.8, m, 0, 0, 0));
     this.neck = new THREE.Group(); this.neck.position.set(0, 0.12, 0.45); this.torso.add(this.neck);
     this.neck.add(bx(0.24, 0.22, 0.3, m, 0, 0.05, 0.12)); this.neck.add(bx(0.14, 0.1, 0.16, d, 0, -0.02, 0.32));
     for (const e of [-0.09, 0.09]) this.neck.add(bx(0.06, 0.08, 0.04, d, e, 0.17, 0.08));
+    this.neck.add(bx(0.27, 0.06, 0.2, plasticMat(this.plastic || FACTION_PLASTIC.gang, 1, 0.3), 0, -0.05, -0.02)); // collar in owner's colour
     this.legs = [];
     for (const [x, z] of [[-0.11, 0.3], [0.11, 0.3], [-0.11, -0.3], [0.11, -0.3]]) { const l = new THREE.Group(); l.position.set(x, -0.15, z); l.add(bx(0.1, 0.42, 0.12, m, 0, -0.2, 0)); this.torso.add(l); this.legs.push(l); }
     const tail = bx(0.06, 0.06, 0.3, m, 0, 0.1, -0.5); tail.rotation.x = -0.6; this.torso.add(tail);
     this.armR = new THREE.Group(); this.armL = new THREE.Group(); this.legR = new THREE.Group(); this.legL = new THREE.Group(); this.gunMount = new THREE.Group(); this.torso.add(this.gunMount); this.gunMesh = null;
+    const gt = gator && MODELS.props.get('gator');
+    if (gt) { // generated alligator for GATOR SEASON: same dog rig and AI, low body, smaller leg swing
+      this.torso.traverse((o) => { if (o.isMesh) o.visible = false; }); this.figure = null; this.legAmp = 0.3;
+      this.dogLegs = gallopMaterial(propMaterial(null)); const gm = new THREE.Mesh(gt.geo, this.dogLegs.material(gt.geo)); gm.castShadow = true; gm.position.y = -0.55; this.torso.add(gm); this.dogBody = gm;
+    } else if (MODELS.dog) { // generated dog (static mid-gallop pose): ride it on the torso so the bob and death roll still apply
+      this.torso.traverse((o) => { if (o.isMesh) o.visible = false; }); this.figure = null;
+      const dg = MODELS.dog.clone(); this.dogLegs = gallopMaterial(MODELS.dogMap ? paintedMat(MODELS.dogMap) : m); dg.traverse((o) => { if (o.isMesh) { o.material = this.dogLegs.material(o.geometry); o.castShadow = true; } }); dg.position.y = -0.55; this.torso.add(dg);
+      const c = MODELS.dogCollar; if (c) { // studded collar in the owner's colour
+        const cm = (MODELS.dogMap ? matteMat : plasticMat)(this.plastic || FACTION_PLASTIC.gang, 1, 0.3), col = new THREE.Mesh(new THREE.TorusGeometry(c.r, Math.max(0.018, c.r * 0.16), 8, 20), cm);
+        col.position.set(c.x, c.y - 0.55, c.z); col.rotation.x = 0.35; col.castShadow = true; this.torso.add(col);
+        for (let i = 0; i < 6; i++) { const a = -Math.PI * 0.15 + (i / 5) * Math.PI * 1.3; const st = new THREE.Mesh(new THREE.SphereGeometry(c.r * 0.11, 6, 4), cm); st.position.set(Math.cos(a) * c.r * 1.12, Math.sin(a) * c.r * 1.12, 0); col.add(st); }
+      }
+      this.dogBody = dg; }
     this.group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   }
   updateDog(dt, st) {
-    if (st.dead) { this.deathT += dt; const t = Math.min(1, this.deathT * 2.5); this.hips.rotation.z = t * Math.PI / 2; this.hips.position.y = 0.55 - t * 0.35; return; }
-    this.deathT = 0; this.hips.rotation.z = 0; this.hips.position.y = 0.55;
+    if (st.dead) { this.deathT += dt; const t = Math.min(1, this.deathT * 2.5); this.hips.rotation.z = t * Math.PI / 2; this.hips.position.y = 0.55 - t * 0.35; this._melt(); return; }
+    this.deathT = 0; this.hips.rotation.z = 0; this.hips.position.y = 0.55; this.group.scale.set(1, 1, 1);
     if (st.moving && st.onGround) this.phase += dt * st.speed * 2.2;
     const amp = Math.min(1, st.speed / 8) * 0.8;
     this.legs.forEach((l, i) => { l.rotation.x = Math.sin(this.phase + (i % 3 === 0 ? 0 : Math.PI)) * amp; });
     this.hips.position.y = 0.55 + Math.abs(Math.sin(this.phase)) * 0.06 * amp;
     this.neck.rotation.x = -(st.pitch || 0) * 0.5;
+    // static gallop pose: rock and stretch the body with the stride so the run reads
+    if (this.dogLegs) { this.dogLegs.uniforms.uPhase.value = this.phase * 2; this.dogLegs.uniforms.uAmp.value = (this.legAmp ?? 0.55) * amp; }
+    if (this.dogBody) { const s = Math.sin(this.phase * 2); this.torso.rotation.x = s * 0.09 * amp; this.dogBody.scale.set(1, 1 - s * 0.04 * amp, 1 + s * 0.06 * amp); }
   }
+  /** Toy death: after the fall the plastic slumps and spreads a little. */
+  _melt() { const k = clamp((this.deathT - 0.55) / 1.4, 0, 1), e = k * (2 - k); this.group.scale.set(1 + e * 0.14, 1 - e * 0.32, 1 + e * 0.14); }
   die(dir = 1) { this.dead = true; this.deathDir = dir; this.deathT = 0; }
-  revive() { this.dead = false; this.deathT = 0; this.hips.rotation.set(0, 0, 0); this.hips.position.set(0, 0.95 * this.scale, 0); }
+  revive() { this.dead = false; this.deathT = 0; this.group.scale.set(1, 1, 1); this.hips.rotation.set(0, 0, 0); this.hips.position.set(0, 0.95 * this.scale, 0); }
   hit() { this.flinch = 1; }
   setVisible(v) { this.group.visible = v; }
   dispose() { this.group.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); }
+}
+
+/**
+ * Leg motion for the generated animals, which are one static mid-stride mesh: a vertex shader swings everything below
+ * the hips fore and aft around the hip line, front and back pairs in opposite phase and left/right offset (a gallop).
+ * Bounds come from each mesh's own local bounding box, so it works on the quantised GLB as loaded.
+ */
+export function gallopMaterial(base) {
+  const uniforms = { uPhase: { value: 0 }, uAmp: { value: 0 } };
+  return {
+    uniforms,
+    material(geo) {
+      geo.computeBoundingBox(); const bb = geo.boundingBox;
+      const hip = bb.min.y + (bb.max.y - bb.min.y) * 0.45, cz = (bb.min.z + bb.max.z) / 2, cx = (bb.min.x + bb.max.x) / 2;
+      const m = base.clone(), prev = base.onBeforeCompile; m.vertexColors = base.vertexColors; m.userData = { ...base.userData };
+      m.onBeforeCompile = (sh, r) => {
+        prev.call(base, sh, r);
+        Object.assign(sh.uniforms, uniforms); sh.uniforms.uLeg = { value: new THREE.Vector4(hip, bb.min.y, cz, cx) };
+        sh.vertexShader = 'uniform float uPhase; uniform float uAmp; uniform vec4 uLeg;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+          float legW = clamp((uLeg.x - transformed.y) / max(1e-4, uLeg.x - uLeg.y), 0.0, 1.0);
+          float ph = uPhase + (transformed.z > uLeg.z ? 0.0 : 3.14159) + (transformed.x > uLeg.w ? 0.0 : 0.9);
+          float a = sin(ph) * uAmp * legW; float dy = transformed.y - uLeg.x;
+          if (legW > 0.0) { transformed.z += dy * sin(a); transformed.y = uLeg.x + dy * cos(a); }`);
+      };
+      m.customProgramCacheKey = () => 'gallop|' + base.customProgramCacheKey();
+      return m;
+    },
+  };
 }

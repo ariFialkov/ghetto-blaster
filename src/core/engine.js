@@ -1,8 +1,10 @@
 // Renderer, scene, lighting, and pooled visual effects.
 import * as THREE from 'three';
-import { tex, skyGradient } from './textures.js';
+import { tex, skyGradient, roomPanorama, setTextureDetail } from './textures.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { setGunEnvironment } from '../game/character.js';
+import { setGunEnvironment, setPlasticQuality } from '../game/character.js';
+// toy reskin: view-model lights were tuned to lift dark metal guns; coloured plastic needs far less
+const VM_PLASTIC = 0.55;
 
 export class Engine {
   constructor(canvas) {
@@ -23,7 +25,7 @@ export class Engine {
     this.vmHemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0); this.vmScene.add(this.vmHemi);
     this.vmSun = new THREE.DirectionalLight(0xffffff, 1.5); this.vmScene.add(this.vmSun); this.vmScene.add(this.vmSun.target);
     // soft fill from behind the camera so dark guns always read against dark backgrounds
-    this.vmFill = new THREE.DirectionalLight(0xffffff, 1.1); this.vmScene.add(this.vmFill); this.vmScene.add(this.vmFill.target);
+    this.vmFill = new THREE.DirectionalLight(0xffffff, 0.55); this.vmScene.add(this.vmFill); this.vmScene.add(this.vmFill.target);
     this.lightBoost = 1.3;
     // Studio reflection environment for weapons: metal with nothing to reflect renders black, so guns get this.
     try {
@@ -46,13 +48,13 @@ export class Engine {
     this.running = false;
   }
   setQuality(q) {
-    this.quality = q;
+    this.quality = q; setPlasticQuality(q); setTextureDetail(q);
     const pr = window.devicePixelRatio || 1;
     this.renderer.setPixelRatio(q === 'low' ? Math.min(pr, 1) : q === 'medium' ? Math.min(pr, 1.5) : Math.min(pr, 2));
     this.renderer.shadowMap.enabled = q !== 'low';
     this.maxMapLights = q === 'low' ? 4 : q === 'medium' ? 6 : 8;
     if (this.sun) { this.sun.castShadow = q !== 'low'; this.sun.shadow.mapSize.setScalar(q === 'high' ? 2048 : 1024); if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; } }
-    this.scene.traverse((o) => { if (o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; });
+    this.scene.traverse((o) => { if (o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; if (o.userData.kit) o.visible = q !== 'low'; });
   }
   _resize() {
     const w = window.innerWidth, h = window.innerHeight;
@@ -63,8 +65,9 @@ export class Engine {
     const s = this.scene;
     // clear old lights
     for (const o of [...s.children]) if ((o.isLight || o.userData.env) && !o.userData.keep) s.remove(o);
-    s.background = skyGradient(env.skyTop, env.skyHorizon, env.skyBottom);
-    s.fog = new THREE.Fog(new THREE.Color(env.fogColor), env.fogNear, env.fogFar);
+    // toy reskin: maps are dioramas on a table, so the backdrop is the (blurred) room instead of open sky
+    s.background = env.room === false ? skyGradient(env.skyTop, env.skyHorizon, env.skyBottom) : roomPanorama(env);
+    s.fog = new THREE.Fog(s.background.userData.wall ? s.background.userData.wall.clone() : new THREE.Color(env.fogColor), env.fogNear, env.fogFar);
     // Global brightness pass: stronger sky/ground fill so anything in shadow stays readable, brighter ambient,
     // higher exposure. Maps keep their own colours and mood; only the floor of the lighting is raised.
     const night = !!env.night;
@@ -84,8 +87,8 @@ export class Engine {
     sun.userData.env = true; s.add(sun); s.add(sun.target); sun.target.userData.env = true;
     this.sun = sun; this.hemi = hemi;
     const amb = new THREE.AmbientLight(new THREE.Color(env.ambient || '#404048').lerp(new THREE.Color('#ffffff'), 0.2), Math.min(1.1, Math.max(0.6, (env.ambientIntensity ?? 0.25) * 2.4))); amb.userData.env = true; s.add(amb);
-    this.vmHemi.color.set(env.hemiSky).lerp(new THREE.Color('#ffffff'), 0.35); this.vmHemi.groundColor.copy(hemiGround).lerp(new THREE.Color('#ffffff'), 0.25); this.vmHemi.intensity = Math.max(1.8, hemiI);
-    this.vmSun.color.set(env.sunColor); this.vmSun.intensity = Math.min(2.6, Math.max(1.6, (env.sunIntensity ?? 2) * 0.9 + 0.4)); this.vmFill.color.set(env.hemiSky).lerp(new THREE.Color('#ffffff'), 0.6); this.vmSunDir = new THREE.Vector3(env.sunDir[0], env.sunDir[1], env.sunDir[2]).normalize();
+    this.vmHemi.color.set(env.hemiSky).lerp(new THREE.Color('#ffffff'), 0.35); this.vmHemi.groundColor.copy(hemiGround).lerp(new THREE.Color('#ffffff'), 0.25); this.vmHemi.intensity = Math.max(1.8, hemiI) * VM_PLASTIC;
+    this.vmSun.color.set(env.sunColor); this.vmSun.intensity = Math.min(2.6, Math.max(1.6, (env.sunIntensity ?? 2) * 0.9 + 0.4)) * VM_PLASTIC; this.vmFill.color.set(env.hemiSky).lerp(new THREE.Color('#ffffff'), 0.6); this.vmSunDir = new THREE.Vector3(env.sunDir[0], env.sunDir[1], env.sunDir[2]).normalize();
   }
   setMapLights(defs) { this.mapLightDefs = defs || []; for (const slot of this.mapPool) { slot.def = null; slot.target = 0; slot.cur = 0; slot.l.intensity = 0; slot.l.position.set(0, -200, 0); } this.mapLightT = 0; }
   updateMapLights(dt, focus) {
@@ -148,7 +151,7 @@ export class FX {
     this.particleTex = tex('particle'); this.muzzleTex = tex('muzzle');
     // muzzle flash layer materials (shared base, cloned per flash so opacity animates independently; same shader program)
     const add = (map, color) => new THREE.MeshBasicMaterial({ map, color, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
-    this.mfMat = { core: new THREE.SpriteMaterial({ map: tex('flashCore'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), tongue: add(tex('flashTongue'), 0xffffff), ring: add(tex('flashRing'), 0xffffff), smoke: new THREE.SpriteMaterial({ map: tex('smokePuff'), transparent: true, depthWrite: false, fog: true, color: 0x9a9aa0 }) };
+    this.mfMat = { core: new THREE.SpriteMaterial({ map: tex('flashCore'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), tongue: add(tex('flashTongue'), 0xffffff), ring: add(tex('flashRing'), 0xffffff), smoke: new THREE.SpriteMaterial({ map: tex('smokePuff'), transparent: true, depthWrite: false, fog: true, color: 0xdedad2 }) };
     const tg = new THREE.PlaneGeometry(1, 1); tg.translate(0, 0.5, 0); tg.rotateX(Math.PI / 2); this.tongueGeo = tg; // extends along +Z from the origin
     const rg = new THREE.PlaneGeometry(1, 1); this.ringGeo = rg; // faces +Z (perpendicular to the barrel)
     this.vmScene = null;
@@ -183,8 +186,9 @@ export class FX {
     if (this.parts.length >= this.MAX) this.parts.shift();
     this.parts.push({ p: p.clone(), v: v.clone(), life, maxLife: life, size, col, grav, drag });
   }
-  impact(point, normal, kind = 'concrete') {
-    const col = kind === 'blood' ? new THREE.Color(0.6, 0.05, 0.05) : kind === 'metal' ? new THREE.Color(1, 0.8, 0.3) : new THREE.Color(0.7, 0.65, 0.55);
+  impact(point, normal, kind = 'concrete', plastic = null) {
+    if (kind === 'blood') return this.chips(point, normal, plastic);
+    const col = kind === 'metal' ? new THREE.Color(1, 0.8, 0.3) : kind === 'metal' ? new THREE.Color(1, 0.8, 0.3) : new THREE.Color(0.7, 0.65, 0.55);
     const n = kind === 'blood' ? 10 : 8;
     for (let i = 0; i < n; i++) {
       const v = normal.clone().multiplyScalar(2 + Math.random() * 3).add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.3) * 3, (Math.random() - 0.5) * 3));
@@ -218,7 +222,7 @@ export class FX {
     parent.add(g);
     this.items.push({ obj: g, life, maxLife: life, kind: 'muzzle', parts: items, parent });
     // smoke puff drifting from the muzzle
-    if (P.smoke > 0) { const sp = new THREE.Sprite(this.mfMat.smoke.clone()); sp.material.opacity = 0; sp.position.copy(pos).addScaledVector(dir, P.length * 0.5); sp.scale.setScalar(P.smoke * 0.5); sp.material.rotation = Math.random() * 6; this.group.add(sp); this.items.push({ obj: sp, life: 0.9, maxLife: 0.9, kind: 'smokepuff', vel: dir.clone().multiplyScalar(0.8).add(new THREE.Vector3(0, 0.5, 0)), grow: P.smoke, peak: P.smokeAlpha }); }
+    if (P.smoke > 0) { const sp = new THREE.Sprite(this.mfMat.smoke.clone()); sp.material.opacity = 0; sp.position.copy(pos).addScaledVector(dir, P.length * 0.5); sp.scale.setScalar(P.smoke * 0.5); sp.material.rotation = Math.random() * 6; this.group.add(sp); this.items.push({ obj: sp, life: 0.9, maxLife: 0.9, kind: 'smokepuff', vel: dir.clone().multiplyScalar(0.8).add(new THREE.Vector3(0, 0.5, 0)), grow: P.smoke * 0.8, peak: Math.min(0.85, P.smokeAlpha * 2.6) }); } // paper-cap puff: denser, a touch smaller
     // sparks
     for (let i = 0; i < P.sparks; i++) { const v = dir.clone().multiplyScalar(6 + Math.random() * 10).add(new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4)); this._spawn(pos, v, 0.12 + Math.random() * 0.2, 0.35, new THREE.Color(1, 0.75, 0.3), 6, 3); }
     // light
@@ -241,7 +245,15 @@ export class FX {
     this.smokes.push({ sprites, life, maxLife: life, pos: pos.clone(), radius });
   }
   sparkTrail(pos) { this._spawn(pos, new THREE.Vector3((Math.random() - 0.5), Math.random(), (Math.random() - 0.5)), 0.4, 0.6, new THREE.Color(1, 0.6, 0.2), 4, 1); }
-  blood(pos) { for (let i = 0; i < 14; i++) this._spawn(pos, new THREE.Vector3((Math.random() - 0.5) * 4, Math.random() * 3, (Math.random() - 0.5) * 4), 0.5, 1.0, new THREE.Color(0.55, 0.03, 0.03), 9, 1); }
+  /** Toy hit: a spray of chips in the victim's plastic colour plus a few white stress flecks. No blood. */
+  chips(point, normal = null, plastic = null) {
+    const base = new THREE.Color(plastic || '#1e4fc0'), hi = base.clone().lerp(new THREE.Color(1, 1, 1), 0.25), white = new THREE.Color(0.95, 0.95, 0.92);
+    for (let i = 0; i < 12; i++) {
+      const v = (normal ? normal.clone().multiplyScalar(1.5 + Math.random() * 2.5) : new THREE.Vector3()).add(new THREE.Vector3((Math.random() - 0.5) * 3.5, Math.random() * 3, (Math.random() - 0.5) * 3.5));
+      this._spawn(point, v, 0.5 + Math.random() * 0.5, 0.16 + Math.random() * 0.14, i < 3 ? white : (i % 2 ? hi : base), 14, 0.6);
+    }
+  }
+  blood(pos, plastic = null) { this.chips(pos, null, plastic); }
   casing(pos, right) { this._spawn(pos, right.clone().multiplyScalar(1.5 + Math.random()).add(new THREE.Vector3(0, 2 + Math.random(), 0)), 0.7, 0.35, new THREE.Color(0.9, 0.75, 0.3), 12, 0); }
   update(dt, camera) {
     // particles
