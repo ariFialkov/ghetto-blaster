@@ -267,9 +267,13 @@ export class Match {
   removeActor(b) { const i = this.actors.indexOf(b); if (i >= 0) this.actors.splice(i, 1); const j = this.bots.indexOf(b); if (j >= 0) this.bots.splice(j, 1); const k = this.crew.indexOf(b); if (k >= 0) this.crew.splice(k, 1); b.dispose(); }
   goLive() {
     this.state = 'live'; this.frozen = false; for (const h of this.players) h.frozen = false;
-    // player 2 goes in with player 1's loadout and streak picks (gun game: everyone starts with the same pistol anyway)
-    const p2 = this.player2;
-    if (p2) { if (this.mode.id !== 'gungame' && p2.loadout !== this.player.loadout) p2.setLoadout(this.player.loadout); p2.streakState = { active: [], picks: this.streakState.picks.slice(), used: [false, false, false], dirty: true }; }
+    // player 2 goes in with their own saved picks (p2Pick), else player 1's (gun game: everyone starts with the same pistol)
+    const p2 = this.player2, own = this.p2Pick || {};
+    if (p2) {
+      const lo = own.loadout || this.player.loadout;
+      if (this.mode.id !== 'gungame' && p2.loadout !== lo) p2.setLoadout(lo);
+      p2.streakState = { active: [], picks: (own.streaks && own.streaks.every(Boolean) ? own.streaks : this.streakState.picks).slice(), used: [false, false, false], dirty: true };
+    }
     this.emit('live'); this.message('GO', 1.0);
   }
   updateRadar(dt) {

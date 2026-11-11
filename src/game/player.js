@@ -25,7 +25,8 @@ export class Player extends Actor {
     this.leanDir = 0;
     this.aimPoint = new THREE.Vector3();
     this.sensitivity = 1;
-    this.view = new ViewModel(this.vmCamera, { plastic: this.model.plastic, skin: this.model.skinTone, bareArms: this.model.hat === 'bandana' });
+    // first-person arms: the player's own figure that round (same model and paint as the body you see when you die)
+    this.view = new ViewModel(this.vmCamera, { plastic: this.model.plastic, skin: this.model.skinTone, bareArms: this.model.hat === 'bandana', body: this.model.figure ? { tpl: this.model.figureTpl, material: this.model.figureMat } : null });
     this.view.setWeapon(this.weapon.def);
     this.model.setVisible(false); // first person: own body hidden while alive
     this.lastLook = { dx: 0, dy: 0 };
@@ -60,7 +61,7 @@ export class Player extends Actor {
     this.lastLook = input.look;
     // controller aim assist: slowdown near enemies, and a short snap toward the closest one when you aim down sights
     let assist = 1;
-    const aa = (input.pad || input.assist) && m.settings.aimAssist !== false && !this.frozen && this.alive;
+    const aa = (input.pad || input.assist) && (this.settings || m.settings).aimAssist !== false && !this.frozen && this.alive; // per player in split screen
     if (aa) {
       const t = this._assistScan(0.02 + (this.ads ? 0.015 : 0));
       if (t) assist = this.ads ? 0.45 : 0.6;

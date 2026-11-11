@@ -15,6 +15,7 @@ import * as UI from './ui/menu.js';
 import { PadNav } from './ui/padnav.js';
 import { loadModels } from './game/models.js';
 import { btn, padLabel } from './ui/padglyphs.js';
+import { SplitPause, NavRepeat, padNav as padMenuEv } from './ui/splitpause.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('gl');
@@ -33,6 +34,8 @@ UI.setEngine(engine);
 const padNav = new PadNav(input);
 const save = getSave();
 let settings = save.settings;
+// player 2's own look settings in split screen (audio and graphics stay shared)
+if (!save.settings2) save.settings2 = { sensitivity: 1, padSensitivity: settings.padSensitivity ?? 1, aimAssist: true, vibration: true, invertY: false, adsHold: true, fov: settings.fov || 75 };
 const params = new URLSearchParams(location.search);
 const DEBUG_TIME = params.has('t') ? Math.max(20, +params.get('t')) : 0; // ?t=60 shortens matches for testing
 const FORCE_MAP = MAPS.some((m) => m.id === params.get('map')) ? params.get('map') : null; // ?map=kowloon
@@ -51,7 +54,12 @@ function applySettings(s) {
   input.sensitivity = s.sensitivity; input.touchSensitivity = s.touchSensitivity; input.invertY = s.invertY; input.adsHold = s.adsHold;
   input.padSensitivity = s.padSensitivity ?? 1; input.vibration = s.vibration !== false;
   setVolume(s.volume); engine.setQuality(s.quality);
-  if (app.match && app.match.player) { app.match.player.fov = s.fov; app.match.player.sensitivity = 1; }
+  if (app.match && app.match.player) { app.match.player.fov = s.fov; app.match.player.sensitivity = 1; app.match.player.settings = s; }
+}
+function applySettings2(s) {
+  save.settings2 = s; persist();
+  if (input.second) input.second.opts = s;
+  const p2 = app.match && app.match.player2; if (p2) { p2.settings = s; p2.fov = s.fov; }
 }
 applySettings(settings);
 
@@ -125,9 +133,15 @@ async function enterLobby(mode) {
   const name = (settings.name || 'YOU').toUpperCase();
   const modeDef = DEBUG_TIME ? { ...mode, timeLimit: DEBUG_TIME } : mode;
   // split screen: who plays with what is decided now (two controllers = one each, one = player 2's, none = keyboard)
-  const split = splitOn() ? splitAssignment() : null; const input2 = input.setSplit(split);
+  const split = splitOn() ? splitAssignment() : null; const input2 = input.setSplit(split, save.settings2);
   app.match = new Match({ engine, input, map: mapData, mode: modeDef, settings, seed, loadout, mapId, bet: app.bet, playerName: name, split: input2 ? { input: input2 } : null });
   const m = app.match; engine.warmup();
+  if (m.player2) { // player 2: own settings and own saved loadout / streak picks
+    m.player.settings = settings; m.player2.settings = save.settings2; m.player2.fov = save.settings2.fov;
+    const sv = save.pick2 || {}, lo = allLoadouts().find((l) => l.id === sv.loadoutId && !l.empty), ids = sv.streaks && sv.streaks[mapId];
+    app.pick2 = { loadoutId: lo ? lo.id : null, streaks: ids || null };
+    m.p2Pick = { loadout: lo ? resolveLoadout(lo) : null, streaks: ids ? ids.map((id) => findStreak(mapId, id)) : null };
+  }
   const total = m.actors.length; const list = m.actors.slice();
   const t = (ms, fn) => app.lobbyTimers.push(setTimeout(fn, ms));
   const t1 = 1600 + rng.int(0, 1200), t2 = t1 + 1800 + rng.int(0, 1200);
@@ -154,7 +168,7 @@ function startMatch() {
   // pointer lock loss during a live desktop match = pause
   document.addEventListener('pointerlockchange', onLockChange);
 }
-function onLockChange() { if (app.state === 'match' && !document.pointerLockElement && !input.mobile && app.match && app.match.state === 'live' && $('screen-loadout').classList.contains('hidden') && $('screen-dialog').classList.contains('hidden')) pauseMatch(); }
+function onLockChange() { if (sp.open) return; if (app.state === 'match' && !document.pointerLockElement && !input.mobile && app.match && app.match.state === 'live' && $('screen-loadout').classList.contains('hidden') && $('screen-dialog').classList.contains('hidden')) pauseMatch(); }
 function openLoadout(midMatch = false) {
   const m = app.match; if (!m || m.state === 'ended') return;
   input.releaseLock();
@@ -185,6 +199,7 @@ function applyPick() {
 }
 function pauseMatch() {
   if (app.state !== 'match' || !app.match || app.match.state === 'ended') return;
+  if (app.match.player2) { openSplitPause(); return; }
   if (!$('screen-dialog').classList.contains('hidden')) return;
   input.setEnabled(false); input.releaseLock(); // free the mouse so the pause menu can be clicked however the pause was triggered
   const resume = () => { UI.closeDialog(); input.setEnabled(true); if (!input.mobile) input.requestLock(); };
@@ -198,7 +213,63 @@ function pauseMatch() {
   };
   openPause();
 }
-function leaveSplit() { if (hud2) hud2.hide(); document.body.classList.remove('split'); input.setSplit(null); }
+// ---------------- split-screen pause: the match freezes, each player gets their own panel ----------------
+const sp = { open: false, panels: [], reps: [new NavRepeat(), new NavRepeat()] };
+const splitDevice = (slot) => { const mode = input.split ? input.split.mode : 'kbd'; return slot === 1 ? (mode === 'pad2' ? 'pad' : 'kbm') : (mode === 'kbd' ? 'keys' : 'pad'); };
+const pickIds = (st) => st.picks.map((d) => d && d.id);
+function openSplitPause() {
+  const m = app.match; if (sp.open || !m || m.state !== 'live') return; // pre-game: the loadout screen is up
+  sp.open = true; input.setEnabled(false); input.releaseLock(); input.menuKeys.length = 0; UI.hideScoreboard();
+  const gunGame = m.mode.id === 'gungame';
+  const p1 = { slot: 1, settings: () => settings, onSettings: (s) => applySettings(s),
+    pick: () => ({ loadoutId: app.pick.loadoutId, streaks: app.pick.streaks || pickIds(m.streakState) }),
+    onPick: (p) => { app.pick = p; save.lastLoadout = p.loadoutId; save.lastStreaks = save.lastStreaks || {}; save.lastStreaks[app.mapId] = p.streaks.slice(); persist(); applyPick(); } };
+  const p2 = { slot: 2, settings: () => save.settings2, onSettings: (s) => applySettings2(s),
+    pick: () => ({ loadoutId: app.pick2.loadoutId || (m.player2.nextLoadout || m.player2.loadout).id, streaks: app.pick2.streaks || pickIds(m.player2.streakState || m.streakState) }),
+    onPick: (p) => applyPick2(p) };
+  const mk = (o, h) => new SplitPause(h.el, { ...o, device: splitDevice(o.slot), padType: () => (o.slot === 1 ? input.padType : input.second.padType), mapId: app.mapId, gunGame, onQuit: () => { closeSplitPause(false); quitMatch(); } });
+  sp.panels = [mk(p1, hud), mk(p2, hud2)];
+  sfx('click');
+}
+function applyPick2(p) {
+  const m = app.match, p2 = m && m.player2; if (!p2) return;
+  app.pick2 = { loadoutId: p.loadoutId, streaks: p.streaks.slice() };
+  save.pick2 = { loadoutId: p.loadoutId, streaks: { ...((save.pick2 && save.pick2.streaks) || {}), [app.mapId]: p.streaks.slice() } }; persist();
+  if (m.mode.id !== 'gungame') {
+    const lo = allLoadouts().find((l) => l.id === p.loadoutId && !l.empty);
+    if (lo) { const r = resolveLoadout(lo); p2.nextLoadout = r.id === p2.loadout.id ? null : r; }
+  }
+  const st = p2.streakState || m.streakState, defs = p.streaks.map((id) => findStreak(app.mapId, id));
+  p2.nextStreaks = defs.every((d, i) => d === st.picks[i]) ? null : defs;
+}
+function closeSplitPause(resume = true) {
+  if (!sp.open) return;
+  const changed = sp.panels.map((p) => p.changed); sp.panels.forEach((p) => p.dispose()); sp.panels = []; sp.open = false; input.menuKeys.length = 0;
+  if (!resume) return;
+  input.setEnabled(true); if (input.split && input.split.mode !== 'pad2') input.requestLock();
+  const m = app.match; [m.player, m.player2].forEach((p, i) => { if (changed[i] && p && p.alive) (i ? hud2 : hud).message('CHANGES APPLY ON NEXT SPAWN', 2.2); });
+  sfx('beep', { freq: 990 });
+}
+/** Each player drives their own panel: player 1 on W/S/A/D, Space, Esc (or their controller with two pads), player 2 on
+ *  the arrows, Enter, Backspace (or their controller). Both can use the mouse. */
+function updateSplitPause(dt) {
+  const mode = input.split ? input.split.mode : 'kbd', shared = mode === 'kbd';
+  // keyboard: every press in order (a slow frame can hold several)
+  const P1K = { KeyW: 'up', KeyS: 'down', KeyA: 'left', KeyD: 'right', Space: 'select', Escape: 'back' };
+  const P2K = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'select', NumpadEnter: 'select', ShiftRight: 'select', Backspace: 'back', Slash: 'back' };
+  if (!shared) Object.assign(P1K, { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'select', NumpadEnter: 'select', Backspace: 'back' });
+  const toEv = (a) => (a === 'select' || a === 'back' ? { [a]: true } : { dir: a });
+  const keys = input.menuKeys.splice(0);
+  for (const code of keys) {
+    if (!sp.open) break;
+    if (P1K[code]) sp.panels[0].handle(toEv(P1K[code])); else if (shared && P2K[code]) sp.panels[1].handle(toEv(P2K[code]));
+  }
+  // controllers
+  if (sp.open && mode === 'pad2' && input.pad) sp.panels[0].handle(padMenuEv(sp.reps[0], input.padJust, input.padPrev, input.padAxes, dt));
+  if (sp.open && !shared && input.second && input.second.padState.gp) { const ps = input.second.padState; sp.panels[1].handle(padMenuEv(sp.reps[1], ps.just, ps.prev, ps.axes, dt)); }
+  if (sp.open && sp.panels.every((p) => p.ready)) closeSplitPause(true);
+}
+function leaveSplit() { closeSplitPause(false); if (hud2) hud2.hide(); document.body.classList.remove('split'); input.setSplit(null); }
 function quitMatch() { document.removeEventListener('pointerlockchange', onLockChange); UI.hideScoreboard(); hud.hide(); leaveSplit(); input.setEnabled(false); enterTitle(app.mapId); }
 function endMatch(res) {
   document.removeEventListener('pointerlockchange', onLockChange);
@@ -219,6 +290,7 @@ engine.onFrame = (dt) => {
   if (app.state === 'lobby') { if (app.match) { updateCinematicLobby(dt); } return; }
   if (app.state === 'match' || app.state === 'results') {
     const m = app.match; if (!m) return;
+    if (app.state === 'match' && sp.open) { updateSplitPause(dt); return; }
     if (app.state === 'match' && (!$('screen-dialog').classList.contains('hidden') || app.midLoadout)) { /* paused (menu or mid-match loadout): freeze */ return; }
     m.update(dt);
     if (app.state === 'match') { hud.update(dt); if (m.player2 && hud2) hud2.update(dt); if (m.state === 'pregame') UI.loadoutTimer(m.pregameT); }
@@ -242,6 +314,6 @@ window.addEventListener('gamepaddisconnected', () => { toast('CONTROLLER DISCONN
 // first touch anywhere unlocks audio
 window.addEventListener('pointerdown', () => initAudio(), { once: true });
 
-window.__gb = { app, engine, input, hud, save, padNav };
+window.__gb = { app, engine, input, hud, save, padNav, sp, get hud2() { return hud2; } };
 // generated 3D models load before the first scene is built; on failure the procedural box models are used
 loadModels('./', { lowTextures: settings.quality === 'low' }).catch((e) => console.warn('models unavailable, using procedural models', e)).finally(() => { enterTitle(); updatePadPrompts(); });

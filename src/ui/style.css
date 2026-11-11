@@ -389,3 +389,34 @@ body.split #minimap { width: 140px; height: 140px; }
 .players-toggle .pt { font-family: var(--font-head); letter-spacing: 0.12em; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 2px solid rgba(255, 255, 255, 0.25); background: rgba(10, 14, 22, 0.55); color: #cfd3dc; cursor: pointer; }
 .players-toggle .pt.on { background: #ffd166; border-color: #ffd166; color: #1a1408; }
 .players-toggle .pt-note { font-size: 12px; letter-spacing: 0.08em; color: #ffd166; max-width: 260px; line-height: 1.25; }
+/* split-screen pause: one panel per player, over their half */
+.sp-panel { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(400px, calc(100% - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; gap: 8px; padding: 16px 16px 12px; background: rgba(10, 12, 18, 0.9); border: 1px solid rgba(255, 255, 255, 0.12); border-top: 3px solid #1e4fc0; border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7); pointer-events: auto; z-index: 30; backdrop-filter: blur(6px); }
+.sp-panel.p2 { border-top-color: #c9a227; }
+.sp-panel.ready { border-color: rgba(52, 211, 153, 0.45); }
+.sp-head { display: flex; align-items: center; gap: 10px; }
+.sp-head h2 { margin: 0; font-family: var(--font-head); font-size: 24px; letter-spacing: 0.18em; color: #fff; }
+.sp-tag { font-family: var(--font-head); font-size: 14px; letter-spacing: 0.1em; padding: 2px 8px; border-radius: 5px; background: #1e4fc0; color: #fff; }
+.sp-tag.p2 { background: #c9a227; color: #1a1408; }
+.sp-wait { font-family: var(--font-head); font-size: 13px; letter-spacing: 0.16em; color: #34d399; }
+.sp-rows { display: flex; flex-direction: column; gap: 5px; overflow-y: auto; min-height: 0; }
+.sp-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); border-left: 3px solid rgba(255, 255, 255, 0.22); background: rgba(255, 255, 255, 0.04); cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+.sp-row.focus { border-left-color: var(--accent); background: linear-gradient(90deg, rgba(47, 102, 219, 0.3), rgba(47, 102, 219, 0.05)); }
+.sp-panel.p2 .sp-row.focus { border-left-color: #c9a227; background: linear-gradient(90deg, rgba(201, 162, 39, 0.28), rgba(201, 162, 39, 0.04)); }
+.sp-row.primary b { color: var(--accent2); }
+.sp-row.danger.focus { border-left-color: var(--danger); background: linear-gradient(90deg, rgba(255, 59, 59, 0.25), rgba(255, 59, 59, 0.03)); }
+.sp-row.on { border-color: rgba(52, 211, 153, 0.4); }
+.sp-l { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.sp-l b { font-family: var(--font-head); font-weight: 400; font-size: 16px; letter-spacing: 0.16em; color: #e8e8ee; }
+.sp-l small { font-size: 11px; color: #9aa0ad; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-v { display: flex; align-items: center; gap: 6px; font-family: var(--font-head); font-size: 14px; letter-spacing: 0.08em; color: var(--accent2); white-space: nowrap; }
+.sp-v button { background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.16); color: #ddd; border-radius: 4px; width: 22px; height: 22px; font-size: 10px; line-height: 1; padding: 0; cursor: pointer; }
+.sp-v button:hover { background: rgba(255, 255, 255, 0.2); }
+.sp-eq { color: #34d399; font-size: 11px; letter-spacing: 0.15em; }
+.sp-controls { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+.sp-crow { display: flex; justify-content: space-between; gap: 12px; padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-size: 13px; color: #cfd3dc; }
+.sp-crow span:last-child { text-align: right; }
+.sp-back { align-self: flex-start; background: none; border: none; color: #9aa0ad; font-family: var(--font-head); letter-spacing: 0.15em; font-size: 13px; cursor: pointer; padding: 2px 0; }
+.sp-back:hover { color: #fff; }
+.sp-hint { font-size: 11px; color: #8a90a0; letter-spacing: 0.06em; text-align: center; padding-top: 4px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
+.sp-hint kbd, .sp-crow kbd { font-size: 10px; }
+#hud:has(.sp-panel) .hud-center-msg, #hud2:has(.sp-panel) .hud-center-msg { visibility: hidden; }

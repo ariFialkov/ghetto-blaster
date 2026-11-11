@@ -30,6 +30,8 @@ export class Input {
     this.padSensitivity = 1.0; this.vibration = true; this.menuActive = false;
     // split screen (desktop): null, or { mode: 'kbd' | 'pad1' | 'pad2', p1, p2 } — see splitAssignment()
     this.split = null; this.pressed2 = new Set(); this.keys2Released = new Set();
+    this.menuKeys = []; // key presses, in order, for the split-screen pause menus (captured even while gameplay input is off)
+    window.addEventListener('keydown', (e) => { if (!e.repeat && this.menuKeys.length < 32) this.menuKeys.push(e.code); });
     this._bind();
   }
   _bind() {
@@ -213,10 +215,10 @@ export class Input {
   }
   setEnabled(on) { this.enabled = on; if (!on) { this.fire = false; this.ads = false; this.keys.clear(); this.move.x = 0; this.move.y = 0; this.pressed2.clear(); } }
   /** Split screen on (cfg from splitAssignment()) or off (null). Returns player 2's input source. */
-  setSplit(cfg) {
+  setSplit(cfg, opts2 = {}) {
     this.split = cfg; this.pressed2.clear();
     if (!cfg) { this.second = null; return null; }
-    this.second = new SecondInput(this, cfg); return this.second;
+    this.second = new SecondInput(this, cfg, opts2); return this.second;
   }
 }
 
@@ -230,7 +232,7 @@ export function splitAssignment() {
 }
 // player 2 keyboard one-shot actions (right-hand side of the keyboard)
 export const P2_KEYS = { KeyO: 'jump', Semicolon: 'crouch', KeyU: 'reload', KeyP: 'swap', KeyN: 'lethal', KeyM: 'tactical', Digit7: 'streak1', Digit8: 'streak2', Digit9: 'streak3', Digit0: 'score', ShiftRight: '_', Slash: '_', KeyH: '_', KeyI: '_', KeyJ: '_', KeyK: '_', KeyL: '_', ArrowUp: '_', ArrowDown: '_', ArrowLeft: '_', ArrowRight: '_' };
-export const P2_KEY_ROWS = [['Move', '<kbd>↑</kbd> <kbd>←</kbd> <kbd>↓</kbd> <kbd>→</kbd>'], ['Look', '<kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>'], ['Fire', '<kbd>RIGHT SHIFT</kbd>'], ['Aim down sights', '<kbd>/</kbd> (hold)'], ['Sprint', '<kbd>H</kbd> (hold)'], ['Jump', '<kbd>O</kbd>'], ['Duck / prone / slide', '<kbd>;</kbd> (tap, double-tap, while sprinting)'], ['Reload', '<kbd>U</kbd>'], ['Swap weapon', '<kbd>P</kbd>'], ['Lethal / tactical', '<kbd>N</kbd> / <kbd>M</kbd>'], ['Score streaks', '<kbd>7</kbd> <kbd>8</kbd> <kbd>9</kbd>'], ['Scoreboard', '<kbd>0</kbd> (hold)'], ['Pause', '<kbd>ESC</kbd> (either player)']];
+export const P2_KEY_ROWS = [['Move', '<kbd>↑</kbd> <kbd>←</kbd> <kbd>↓</kbd> <kbd>→</kbd>'], ['Look', '<kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>'], ['Fire', '<kbd>RIGHT SHIFT</kbd>'], ['Aim down sights', '<kbd>/</kbd> (hold)'], ['Sprint', '<kbd>H</kbd> (hold)'], ['Jump', '<kbd>O</kbd>'], ['Duck / prone / slide', '<kbd>;</kbd> (tap, double-tap, while sprinting)'], ['Reload', '<kbd>U</kbd>'], ['Swap weapon', '<kbd>P</kbd>'], ['Lethal / tactical', '<kbd>N</kbd> / <kbd>M</kbd>'], ['Score streaks', '<kbd>7</kbd> <kbd>8</kbd> <kbd>9</kbd>'], ['Scoreboard', '<kbd>0</kbd> (hold)'], ['Pause', '<kbd>ESC</kbd> (either player)'], ['Pause menu', '<kbd>↑</kbd> <kbd>↓</kbd> · <kbd>ENTER</kbd> select · <kbd>BACKSPACE</kbd> back']];
 
 /** One controller's state (button edges, sticks, stick look) with the standard FPS mapping. */
 class PadState {
@@ -268,13 +270,16 @@ class PadState {
 
 /** Player 2 in split screen: the right-hand keyboard set, or their own controller. Same snapshot shape as Input. */
 export class SecondInput {
-  constructor(main, cfg) { this.main = main; this.cfg = cfg; this.padState = new PadState(); this.mobile = false; this.crouchHold = false; this.dt = 1 / 60; this.lookT = { x: 0, y: 0 }; this.label = cfg.mode === 'kbd' ? 'ARROW KEYS' : 'CONTROLLER'; }
+  constructor(main, cfg, opts = {}) { this.main = main; this.cfg = cfg; this.opts = opts; this.padState = new PadState(); this.mobile = false; this.crouchHold = false; this.dt = 1 / 60; this.lookT = { x: 0, y: 0 }; this.adsT = false; this.label = cfg.mode === 'kbd' ? 'ARROW KEYS' : 'CONTROLLER'; this.padType = 'xbox'; }
+  /** Player 2's own settings (sensitivity, invert, aim hold / toggle, vibration); the rest falls back to player 1's. */
+  get o() { const M = this.main, o = this.opts || {}; return { sens: o.padSensitivity ?? M.padSensitivity, invertY: o.invertY ?? M.invertY, adsHold: o.adsHold ?? M.adsHold, vibration: o.vibration ?? M.vibration }; }
   get pad() { return this.cfg.mode !== 'kbd'; }
   update(dt) {
     this.dt = dt;
     if (this.cfg.mode === 'kbd') return;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    this.padState.read(pads[this.cfg.p2], dt, this.main.padSensitivity);
+    const gp = pads[this.cfg.p2]; if (gp) this.padType = /054c|dualsense|dualshock|playstation|ps5|ps4/i.test(gp.id) ? 'ps' : 'xbox';
+    this.padState.read(gp, dt, this.o.sens);
   }
   poll() {
     const M = this.main, snap = { move: { x: 0, y: 0 }, look: { dx: 0, dy: 0 }, fire: false, ads: false, sprint: false, peek: 0, jumpHeld: false, pressed: new Set(), pad: this.cfg.mode !== 'kbd', assist: true };
@@ -285,16 +290,17 @@ export class SecondInput {
       // key look: eases in so a tap nudges and a hold turns at full speed
       const lx = (k.has('KeyL') ? 1 : 0) - (k.has('KeyJ') ? 1 : 0), ly = (k.has('KeyK') ? 1 : 0) - (k.has('KeyI') ? 1 : 0);
       this.lookT.x = lx ? Math.min(1, this.lookT.x + dt * 3) : 0; this.lookT.y = ly ? Math.min(1, this.lookT.y + dt * 3) : 0;
-      const ease = (t) => 0.35 + 0.65 * t * t, sens = M.padSensitivity;
-      snap.look.dx = lx * 2.6 * sens * ease(this.lookT.x) * dt / 0.0022; snap.look.dy = ly * 1.7 * sens * ease(this.lookT.y) * dt / 0.0022 * (M.invertY ? -1 : 1);
-      snap.fire = k.has('ShiftRight'); snap.ads = k.has('Slash'); snap.sprint = k.has('KeyH') && snap.move.y > 0.3; snap.jumpHeld = k.has('KeyO');
+      const ease = (t) => 0.35 + 0.65 * t * t, O = this.o, sens = O.sens;
+      snap.look.dx = lx * 2.6 * sens * ease(this.lookT.x) * dt / 0.0022; snap.look.dy = ly * 1.7 * sens * ease(this.lookT.y) * dt / 0.0022 * (O.invertY ? -1 : 1);
+      snap.fire = k.has('ShiftRight');
+      if (O.adsHold) snap.ads = k.has('Slash'); else { if (k.has('Slash') && !this._slash) this.adsT = !this.adsT; snap.ads = this.adsT; } this._slash = k.has('Slash'); snap.sprint = k.has('KeyH') && snap.move.y > 0.3; snap.jumpHeld = k.has('KeyO');
       for (const a of M.pressed2) if (a !== '_') snap.pressed.add(a);
       M.pressed2.clear();
-    } else if (this.padState.gp) this.padState.gameplay(snap, M.adsHold, M.invertY);
+    } else if (this.padState.gp) this.padState.gameplay(snap, this.o.adsHold, this.o.invertY);
     return snap;
   }
   rumble(weak, strong, ms) {
-    const gp = this.padState.gp; if (!this.main.vibration || !gp) return; const a = gp.vibrationActuator;
+    const gp = this.padState.gp; if (!this.o.vibration || !gp) return; const a = gp.vibrationActuator;
     if (a && a.playEffect) { try { const r = a.playEffect('dual-rumble', { startDelay: 0, duration: ms, weakMagnitude: weak, strongMagnitude: strong }); if (r && r.catch) r.catch(() => {}); } catch (e) { /* unsupported */ } }
   }
 }

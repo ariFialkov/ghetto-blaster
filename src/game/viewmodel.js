@@ -5,6 +5,9 @@ import { damp, lerp, clamp } from '../core/rng.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { Spring, Spring3, smooth } from './spring.js';
 import { pathAt, env } from './kinetic.js';
+import { Figure } from './figure.js';
+const _q = new THREE.Quaternion(), _M = new THREE.Matrix4(), _I = new THREE.Matrix4(), _tR = new THREE.Vector3(), _tL = new THREE.Vector3(), _FR = new THREE.Vector3(), _NR = new THREE.Vector3(), _FL = new THREE.Vector3(), _NL = new THREE.Vector3(), _P = new THREE.Vector3(), _A = new THREE.Vector3(), _pole = new THREE.Vector3(), _w = new THREE.Vector3();
+const n3 = (x, y, z) => new THREE.Vector3(x, y, z).normalize();
 
 // Sculpted toy-figure hands: four curled finger rings around the grip, a palm pad, a thumb, then a tapered forearm
 // into a hoodie cuff. Built in a local frame where the grip runs along Y, the palm faces -Z and the fingertips +Z.
@@ -43,8 +46,19 @@ function toyHand(skin, sleeve, { cuffMat = sleeve, pos, rx = 0, ry = 0, rz = 0, 
 
 
 export class ViewModel {
-  constructor(camera, { plastic = '#1e4fc0', skin = null, bareArms = false } = {}) {
+  constructor(camera, { plastic = '#1e4fc0', skin = null, bareArms = false, body = null } = {}) {
     this.camera = camera;
+    // the player's own arms: the same skinned figure (and paint) as their body that round, cut down to the arms and posed
+    // onto the gun by IK. Toy hands are the fallback when the 3D models aren't loaded.
+    if (body && body.tpl) {
+      const f = new Figure(body.tpl, body.material, 1);
+      if (f.ok && f.hand.Left && f.hand.Right) {
+        this.arms = f.armsOnly(); this.armRig = new THREE.Group(); this.armRig.rotation.y = Math.PI; camera.add(this.armRig); this.armRig.add(f.root); this.armRig.visible = false;
+        // the figure stands so its own shoulders sit just below and behind the eye (the rig's origin)
+        const mid = f.rest.LeftArm.p.clone().add(f.rest.RightArm.p).multiplyScalar(0.5); f.root.position.set(-mid.x, -mid.y - 0.3, -mid.z - 0.06); f.root.updateMatrixWorld(true);
+        f.root.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+      }
+    }
     this.root = new THREE.Group(); camera.add(this.root);
     this.pivot = new THREE.Group(); this.root.add(this.pivot); // recoil / reload offsets
     this.gunHolder = new THREE.Group(); this.gunHolder.rotation.y = Math.PI; this.pivot.add(this.gunHolder); // gun models point +Z; camera looks down -Z
@@ -69,10 +83,12 @@ export class ViewModel {
     this.freeRig.add(this.freeHand);
     this.grenade = new THREE.Mesh(new THREE.SphereGeometry(0.036, 14, 10), new THREE.MeshStandardMaterial({ color: '#4a5530', roughness: 0.55, metalness: 0.2 }));
     this.grenade.scale.set(1, 1.2, 1); this.grenade.position.set(0, 0.02, 0.045); this.freeHand.add(this.grenade);
-    this.phone = new THREE.Group(); const body = new THREE.Mesh(new RoundedBoxGeometry(0.052, 0.1, 0.012, 2, 0.006), new THREE.MeshStandardMaterial({ color: '#16181c', roughness: 0.4 }));
+    this.phone = new THREE.Group(); const shell = new THREE.Mesh(new RoundedBoxGeometry(0.052, 0.1, 0.012, 2, 0.006), new THREE.MeshStandardMaterial({ color: '#16181c', roughness: 0.4 }));
     const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.044, 0.084), new THREE.MeshBasicMaterial({ color: '#3cff8a' })); scr.position.z = -0.0065; scr.rotation.y = Math.PI;
-    this.phone.add(body, scr); this.phone.position.set(0, 0.03, -0.004); this.freeHand.add(this.phone);
+    this.phone.add(shell, scr); this.phone.position.set(0, 0.03, -0.004); this.freeHand.add(this.phone);
     this.freeRig.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+    // with the real arms, the free hand is the figure's own left hand: only the grenade / phone props stay
+    if (this.arms) for (const c of this.freeHand.children) if (c !== this.grenade && c !== this.phone) c.visible = false;
   }
   /** One-off first-person actions: 'throw' (lethal / tactical), 'call' (score streak). */
   act(kind) { if (kind === 'throw') { this.throwT = 0; this.callT = -1; } else if (kind === 'call') { this.callT = 0; this.throwT = -1; } }
@@ -97,6 +113,7 @@ export class ViewModel {
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     const fit = this.gun.userData.fit;
     this.leftHand = null;
+    if (fit && this.arms) { this._armGrips(fit); return; }
     if (fit) { this._fitHands(fit, V); this.leftHand = this.hands.children[1] || null; this.leftBase = this.leftHand ? this.leftHand.position.clone() : null; return; }
     this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: V(-0.005, -h / 2 - 0.07, len * 0.2 - 0.01), rx: -0.22, armDir: V(-0.28, -0.42, -1), thumbSide: 1 }));
     if (d.pistol) this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: V(0.035, -h / 2 - 0.1, len * 0.2 + 0.012), rx: -0.12, rz: 0.35, armDir: V(0.6, -0.5, -1), thumbSide: -1 }));
@@ -107,7 +124,55 @@ export class ViewModel {
       this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, pos: V(0.004, y, z), rx: -Math.PI / 2, rz: 0.15, armDir: V(0.95, -0.55, -0.75), thumbSide: -1 }));
     }
   }
-  /** Hands for an artist gun, from its measured grip / fore-end anchors (gun space, real-world scale). */
+  /**
+   * Grip points for the real arms (gun space: palm centre, finger direction F, palm normal N), the same hold as the
+   * third-person figure: shooting hand on the grip, support hand cupping the pistol hand, on the vertical grip, or palm
+   * up under the handguard a third of the way along it.
+   */
+  _armGrips(f) {
+    const pistol = f.hold === 'pistol';
+    this.gripR = { p: new THREE.Vector3(-0.026, f.grip[1], f.grip[0]), F: pistol ? n3(0.1, -0.55, 0.83) : n3(0.2, -0.62, 0.76), N: n3(1, 0, 0) };
+    if (pistol) this.gripL = { p: new THREE.Vector3(0.03, f.grip[1] - 0.014, f.grip[0] - 0.004), F: n3(-0.1, -0.6, 0.8), N: n3(-1, 0, 0) };
+    else if (f.vgrip) this.gripL = { p: new THREE.Vector3(0.026, f.fore[2], f.fore[0]), F: n3(-0.15, -0.55, 0.82), N: n3(-1, 0, 0) };
+    else { const z = f.fore[0] + (f.fore[1] - f.fore[0]) * 0.35, under = this._underside(z); this.gripL = { p: new THREE.Vector3(0.006, (under !== null ? under : f.fore[2]) - 0.026, z), F: n3(0.25, 0.12, 0.96), N: n3(-0.35, 0.94, 0) }; }
+    this.leftBase = this.gripL.p.clone(); this.leftG = this.gripL.p.clone();
+  }
+  /**
+   * Pose the real arms (rig space = the figure's own: +Z forward, +X its left, eye at the origin). Each arm's shoulder
+   * sits at its natural spot below and behind the eye, sliding toward the hand only as far as needed to reach (it is
+   * off screen either way), the hand lands on its grip with the grip's orientation, the elbow hangs down and out.
+   */
+  _poseArms() {
+    const f = this.arms, rig = this.armRig, fit = this.gun && this.gun.userData.fit;
+    rig.visible = this.root.visible && !!fit && !!this.gripR; if (!rig.visible) return;
+    this.camera.updateMatrixWorld(true);
+    f.begin(rig); _I.copy(rig.matrixWorld).invert(); _M.copy(_I).multiply(this.gun.matrixWorld); // gun -> rig space
+    _tR.copy(this.gripR.p).applyMatrix4(_M); _FR.copy(this.gripR.F).transformDirection(_M); _NR.copy(this.gripR.N).transformDirection(_M);
+    _tL.copy(this.leftG).applyMatrix4(_M); _FL.copy(this.gripL.F).transformDirection(_M); _NL.copy(this.gripL.N).transformDirection(_M);
+    // throwing / calling in: the left hand leaves the gun for the grenade or the phone
+    const k = this.throwT >= 0 ? this.throwT : this.callT;
+    if (k >= 0) {
+      const w = env(k, 0, 0.1, 0.9, 1);
+      _w.setFromMatrixPosition(this.freeHand.matrixWorld).applyMatrix4(_I); _tL.lerp(_w, w);
+      _FL.lerp(_w.set(0, 1, 0.2).normalize(), w).normalize(); _NL.lerp(_w.set(0.15, 0, -1).normalize(), w).normalize(); // palm toward you, fingers up
+    }
+    for (const [side, T, F, N] of [['Right', _tR, _FR, _NR], ['Left', _tL, _FL, _NL]]) {
+      const sg = side === 'Left' ? 1 : -1, L = f.len[side], reach = (L[0] + L[1]) * 0.96 + 0.07;
+      // shoulder at rest, then slid (with its shoulder bone, so the skin moves with it) only as far as reach needs
+      const sh = f.b[side + 'Shoulder']; if (sh) { sh.position.copy(f.rest[side + 'Shoulder'].lp); sh.updateMatrixWorld(true); }
+      f.pos(side + 'Arm', _A); const d = _A.distanceTo(T);
+      if (d > reach && sh) { _P.subVectors(_A, T).normalize().multiplyScalar(reach).add(T); f.pos(side + 'Shoulder', _w).add(_P).sub(_A); f.setBonePos(side + 'Shoulder', _w); }
+      f.pos(side + 'Arm', _P);
+      _pole.set(sg * 0.35, -0.8, -0.15).add(_P);
+      f.arm(side, T, F, N, _pole);
+    }
+    // the grenade / phone sits in the real left palm, just in front of it
+    if (k >= 0) {
+      const prop = this.throwT >= 0 ? this.grenade : this.phone; f.pos('LeftHand', _w); f.quat('LeftHand', _q);
+      _P.copy(f.hand.Left.palm).applyQuaternion(_q).add(_w); _A.copy(f.hand.Left.n).applyQuaternion(_q).multiplyScalar(this.throwT >= 0 ? 0.045 : 0.03); _P.add(_A);
+      rig.localToWorld(_P); this.freeHand.worldToLocal(_P); prop.position.copy(_P);
+    }
+  }
   _fitHands(f, V) {
     const H = (o) => this.hands.add(toyHand(this.skinMat, this.sleeveMat, { cuffMat: this.cuffMat, ...o }));
     // shooting hand: the finger rings wrap the pistol grip, raked back like the grip itself
@@ -150,7 +215,7 @@ export class ViewModel {
   onShot(w) { this.kick = Math.min(0.12, this.kick + w.recoilV * 0.02 + 0.015); this.kickRot = Math.min(0.25, this.kickRot + w.recoilV * 0.03); }
   /** st: { ads, sprint, moving, speed, onGround, vy, vRight, vFwd, reloading, reloadT, reloadTime, look:{dx,dy}, bobPhase, dead, hidden, lean, slide, crawl } */
   update(dt, st) {
-    if (!this.gun || st.dead || st.hidden) { this.root.visible = false; this.freeRig.visible = false; this.throwT = this.callT = -1; if (this.pending) { this._build(this.pending); this.pending = null; this.swapPh = 1; } return; }
+    if (!this.gun || st.dead || st.hidden) { this.root.visible = false; this.freeRig.visible = false; if (this.armRig) this.armRig.visible = false; this.throwT = this.callT = -1; if (this.pending) { this._build(this.pending); this.pending = null; this.swapPh = 1; } return; }
     this.root.visible = true;
     dt = Math.min(dt, 0.05);
     // weapon swap: lower the old gun out of view, swap at the bottom, raise the new one
@@ -205,7 +270,7 @@ export class ViewModel {
     }
     this.lastRlK = st.reloading ? rk : this.lastRlK;
     // the support hand does the magazine change (artist guns): to the mag, out of view for a fresh one, slap it in, rack
-    if (fit && this.leftHand && this.leftBase) {
+    if (fit && this.leftBase && (this.leftHand || this.arms)) {
       const P = this._rlPts || (this._rlPts = Array.from({ length: 8 }, () => new THREE.Vector3())), ks = [0, 0.16, 0.3, 0.44, 0.56, 0.7, 0.8, 1];
       const mag = fit.mag, pistol = fit.hold === 'pistol';
       P[0].copy(this.leftBase); P[1].set(0.02, mag[1] - 0.03, mag[0]); P[2].set(0.12, mag[1] - 0.36, mag[0] - 0.05); P[3].copy(P[2]);
@@ -213,7 +278,7 @@ export class ViewModel {
       if (pistol) P[5].set(0.0, fit.sight + 0.015, 0.02); else P[5].set(0.07, fit.sight * 0.5, fit.grip[0] + 0.07);
       P[6].copy(P[5]).add(new THREE.Vector3(0, 0, -0.06)); P[7].copy(this.leftBase);
       const hp = pathAt(this._rlHp || (this._rlHp = new THREE.Vector3()), P, ks, rk);
-      this.leftHand.position.lerpVectors(this.leftBase, hp, rl);
+      if (this.arms) this.leftG.lerpVectors(this.leftBase, hp, rl); else this.leftHand.position.lerpVectors(this.leftBase, hp, rl);
     }
     // lowered: weapon swap, throwing, calling in a streak
     let actLow = 0;
@@ -239,6 +304,7 @@ export class ViewModel {
     // idle breathing
     const br = Math.sin((this.t = (this.t || 0) + dt) * 1.6) * (1 - (st.moving ? 1 : 0)); pos.y += br * 0.0025 * (1 - ads * 0.8); rot.x += br * 0.004 * (1 - ads * 0.8);
     this.root.position.copy(pos); this.root.rotation.set(rot.x, rot.y, rot.z);
+    if (this.arms) this._poseArms();
   }
   /** The free left hand: a throw (reach, wind up, release, follow through) or a phone call-in for a streak. */
   _freeHand(dt) {

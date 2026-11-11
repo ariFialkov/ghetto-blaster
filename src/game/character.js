@@ -193,7 +193,7 @@ export class CharacterModel {
     const painted = tpl && tpl.userData.paint;
     // Trap House Armor plates: the crew colour, painted darker (molded darker on unpainted figures)
     this.armorMat = painted ? matteMat(base, 0.45) : P(1).clone(); if (!painted) { this.armorMat.color.multiplyScalar(0.45); this.armorMat.roughness = 0.55; }
-    if (tpl) { const fig = new Figure(tpl, painted ? paintedMat(tpl.userData.paint, base) : P(1), s); if (fig.ok) { this.group.traverse((o) => { if (o.isMesh) o.visible = false; }); this.figure = fig; this.group.add(fig.root); } }
+    if (tpl) { const mat = painted ? paintedMat(tpl.userData.paint, base) : P(1); const fig = new Figure(tpl, mat, s); if (fig.ok) { this.group.traverse((o) => { if (o.isMesh) o.visible = false; }); this.figure = fig; this.group.add(fig.root); this.figureTpl = tpl; this.figureMat = mat; } }
   }
   /** Equip a weapon. With the kinetic animator running, the old gun is lowered, swapped at the bottom and raised. */
   setGun(weapon) {

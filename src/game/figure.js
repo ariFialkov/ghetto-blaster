@@ -154,6 +154,30 @@ export class Figure {
     bone.position.copy(pos).applyMatrix4(_m);
     this._setRootQ('Hips', _q.copy(dq).multiply(this.rest.Hips.q));
   }
+  /** Place a bone's origin at group-space position `pos` (moves it within its parent; the bone keeps its rotation). */
+  setBonePos(name, pos) {
+    const bone = this.b[name]; _m.multiplyMatrices(_invG, bone.parent.matrixWorld).invert();
+    bone.position.copy(pos).applyMatrix4(_m); bone.updateMatrixWorld(true);
+  }
+  /**
+   * Keep only the arms (shoulder, upper arm, forearm, hand) of the skinned mesh: triangles whose vertices are all mainly
+   * carried by those bones. Used for the first-person arms, so they are the same model and paint as the body.
+   */
+  armsOnly() {
+    const arm = new Set(['LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand']);
+    this.root.traverse((o) => {
+      if (!o.isMesh) return;
+      if (!o.isSkinnedMesh) { o.visible = false; return; }
+      const g = o.geometry.clone(), si = g.attributes.skinIndex, sw = g.attributes.skinWeight, bones = o.skeleton.bones;
+      const isArm = new Uint8Array(g.attributes.position.count);
+      // a vertex counts when it's mainly carried by the arm or shoulder bones (the cut edge then sits at the torso, off screen)
+      for (let i = 0; i < isArm.length; i++) { let w = 0; for (let c = 0; c < 4; c++) { const bn = bones[si.getComponent(i, c)]; if (bn && arm.has(bn.name)) w += sw.getComponent(i, c); } isArm[i] = w >= 0.6 ? 1 : 0; }
+      const src = g.index ? g.index.array : Array.from({ length: isArm.length }, (_, i) => i), keep = [];
+      for (let t = 0; t < src.length; t += 3) if (isArm[src[t]] && isArm[src[t + 1]] && isArm[src[t + 2]]) keep.push(src[t], src[t + 1], src[t + 2]);
+      g.setIndex(keep); o.geometry = g; o.castShadow = false;
+    });
+    return this;
+  }
   /** Any bone to (group-space delta) x (bind orientation). */
   setRot(name, dq) { this._setRootQ(name, _q.copy(dq).multiply(this.rest[name].q)); }
   /** Bone position in group space. */
