@@ -1,7 +1,7 @@
 // Two-layer grid navigation mesh built from the collision world. Each cell stores up to two walkable
 // surfaces (lowest and highest), so bots can path through building interiors AND over their roofs.
 import * as THREE from 'three';
-import { STEP_HEIGHT } from '../core/physics.js';
+import { STEP_HEIGHT, boxHitsCircle, boxDistXZ } from '../core/physics.js';
 // Max height difference between neighbouring nav nodes. Larger than the physics step so stairs connect;
 // bots jump when the next waypoint is above the physics step height.
 export const NAV_STEP = 1.15;
@@ -44,20 +44,20 @@ export class NavGrid {
       const p = this.toWorld(cx, cz);
       if (p.x < w.bounds.minX + 1 || p.x > w.bounds.maxX - 1 || p.z < w.bounds.minZ + 1 || p.z > w.bounds.maxZ - 1) continue;
       cands.length = 0; cands.push(w.groundY);
-      w.near(p.x, p.z, r, (b) => { if (!b.walkable) return; if (p.x + r > b.min.x && p.x - r < b.max.x && p.z + r > b.min.z && p.z - r < b.max.z && b.max.y <= maxH && b.max.y > w.groundY) cands.push(b.max.y); });
+      w.nearParts(p.x, p.z, r, (b) => { if (!b.walkable) return; if (boxHitsCircle(b, p.x, p.z, r) && b.max.y <= maxH && b.max.y > w.groundY) cands.push(b.max.y); });
       cands.sort((a, b) => a - b);
       const ok = [];
       for (let i = 0; i < cands.length; i++) {
         const floor = cands[i]; if (i > 0 && Math.abs(floor - cands[i - 1]) < 0.05) continue;
         let blocked = false; const y0 = floor + STEP_HEIGHT, y1 = floor + 1.75;
-        w.near(p.x, p.z, r, (b) => { const ox = p.x + r > b.min.x && p.x - r < b.max.x, oz = p.z + r > b.min.z && p.z - r < b.max.z; if (ox && oz && b.max.y > y0 && b.min.y < y1) { blocked = true; return false; } });
+        w.nearParts(p.x, p.z, r, (b) => { if (boxHitsCircle(b, p.x, p.z, r) && b.max.y > y0 && b.min.y < y1) { blocked = true; return false; } });
         if (!blocked) ok.push(floor);
       }
       if (!ok.length) continue;
       const base = this.idx(cx, cz) * 2;
       this.h[base] = ok[0]; if (ok.length > 1) this.h[base + 1] = ok[ok.length - 1];
       for (const layer of [0, 1]) { const floor = this.h[base + layer]; if (Number.isNaN(floor)) continue; let tallNear = false;
-        w.near(p.x, p.z, r + 1.2, (b) => { if (b.max.y > floor + 1.2 && b.min.y < floor + 1.2) { const dx = Math.max(b.min.x - p.x, 0, p.x - b.max.x), dz = Math.max(b.min.z - p.z, 0, p.z - b.max.z); if (dx * dx + dz * dz < 1.6 * 1.6) tallNear = true; } });
+        w.nearParts(p.x, p.z, r + 1.2, (b) => { if (b.max.y > floor + 1.2 && b.min.y < floor + 1.2) { if (boxDistXZ(b, p.x, p.z) < 1.6) tallNear = true; } });
         this.cover[base + layer] = tallNear ? 1 : 0; }
     }
     // openness: fraction of neighbouring cells (radius 3) with a layer near this height

@@ -59,13 +59,37 @@ export class MapBuilder {
     const m = new THREE.Mesh(geo, material); m.position.set(x, y, z); m.rotation.y = rot; m.castShadow = castShadow; m.receiveShadow = receive; this.group.add(m); return m;
   }
   _collide(x, y, z, w, h, d, rot = 0, opts = {}) {
-    // rotated boxes become their AABB (fine for props; keep rotations at 0/90 for walls)
-    let ww = w, dd = d;
+    // axis-aligned when square to the grid, otherwise a true rotated box (a 45-degree car blocks only where the car is)
     const r = ((rot % Math.PI) + Math.PI) % Math.PI;
-    if (Math.abs(r - Math.PI / 2) < 0.01) { ww = d; dd = w; }
-    else if (r > 0.01 && Math.abs(r - Math.PI) > 0.01) { const c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r)); ww = w * c + d * s; dd = w * s + d * c; }
-    const b = Box.fromCenter(x, y, z, ww, h, dd, opts.tag || 'solid'); b.walkable = opts.walkable ?? true; b.kind = opts.kind || 'prop';
+    let b;
+    if (r < 0.01 || Math.abs(r - Math.PI) < 0.01) b = Box.fromCenter(x, y, z, w, h, d, opts.tag || 'solid');
+    else if (Math.abs(r - Math.PI / 2) < 0.01) b = Box.fromCenter(x, y, z, d, h, w, opts.tag || 'solid');
+    else b = Box.oriented(x, y, z, w, h, d, rot, opts.tag || 'solid');
+    b.walkable = opts.walkable ?? true; b.kind = opts.kind || 'prop'; if (this._propType) b.prop = this._propType;
     this.world.add(b); return b;
+  }
+  /**
+   * Solid generated props: replace the colliders the old procedural prop registered with ones fitted to the model the
+   * player actually sees (its triangles sliced into height bands, merged where the outline doesn't change), so cover
+   * stops exactly at the bodywork and you can shoot over a car's hood or past its corner.
+   */
+  _fitColliders(m, tpl, old) {
+    if (!old.length) return; // the old prop had no collider: keep it that way
+    const bands = tpl.bands || (tpl.bands = fitBands(tpl.geo));
+    if (!bands.length) return;
+    const proto = old.find((b) => b.walkable) || old[0];
+    for (const b of old) this.world.remove(b);
+    const sx = m.scale.x, sy = m.scale.y, sz = m.scale.z, rot = m.rotation.y, c = Math.cos(rot), sn = Math.sin(rot);
+    const src = { x: m.position.x, y: m.position.y, z: m.position.z, rot, sx, sy, sz }; // the model these were fitted to
+    const at = (lx, lz) => [m.position.x + lx * c + lz * sn, m.position.z - lx * sn + lz * c]; // model frame -> world
+    const make = (x0, x1, y0, y1, z0, z1) => { const [wx, wz] = at(((x0 + x1) / 2) * sx, ((z0 + z1) / 2) * sz);
+      return Box.oriented(wx, m.position.y + y0 * sy, wz, (x1 - x0) * sx, (y1 - y0) * sy, (z1 - z0) * sz, rot, proto.tag); };
+    // one compound in the world grid (its outline in the prop's own frame) holding the fitted parts: rays and
+    // movement only look at the parts when they reach the outline, so fine fitting costs about nothing
+    const parts = bands.map((B) => { const p = make(B.x0, B.x1, B.y0, B.y1, B.z0, B.z1); p.walkable = proto.walkable; p.kind = proto.kind; p.prop = this._propType; p.src = src; return p; });
+    const ext = bands.reduce((e, B) => [Math.min(e[0], B.x0), Math.max(e[1], B.x1), Math.min(e[2], B.y0), Math.max(e[3], B.y1), Math.min(e[4], B.z0), Math.max(e[5], B.z1)], [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]);
+    const comp = make(...ext); comp.parts = parts; comp.walkable = proto.walkable; comp.kind = proto.kind; comp.prop = this._propType; comp.src = src;
+    this.world.add(comp);
   }
   // generic textured box with a collider
   box({ x, y = 0, z, w, h, d, m = null, color = '#888', rot = 0, collide = true, walkable = true, repeat = null, tag, kind, castShadow = true }) {
@@ -336,14 +360,17 @@ export class MapBuilder {
 
   // ---------------- props ----------------
   prop(type, o = {}) {
-    const { x = 0, z = 0, rot = 0 } = o; const rng = this.rng;
     const P = PROPS[type]; if (!P) { console.warn('unknown prop', type); return; }
+    this._propType = type; try { this._prop(type, o, P); } finally { this._propType = null; }
+  }
+  _prop(type, o, P) {
+    const { x = 0, z = 0, rot = 0 } = o; const rng = this.rng;
     const G = GLB_PROPS[type], tpl = G && (!G.when || G.when(o)) && MODELS.props.get(G.model ? G.model(o) : type);
     if (!tpl) { P.call(this, x, z, rot, o, rng); return; }
     // Run the original builder into a throwaway group: it makes exactly the same RNG draws, colliders, lights and
     // landmarks as before, so layouts, nav and pre-planned outcomes can't change. Then show the generated mesh instead,
     // in the colour and at the size the original picked; sticker decals (signs, adverts, van lettering) are kept.
-    const real = this.group, tmp = new THREE.Group(), nLights = this.lights.length; this.group = tmp;
+    const real = this.group, tmp = new THREE.Group(), nLights = this.lights.length, nBoxes = this.world.boxes.length; this.group = tmp;
     try { P.call(this, x, z, rot, o, rng); } finally { this.group = real; }
     tmp.updateMatrixWorld(true);
     if (G.custom) { G.custom.call(this, tmp, tpl, o); return; }
@@ -355,6 +382,7 @@ export class MapBuilder {
     if (G.stretch) m.scale.fromArray(G.stretch(o));
     m.castShadow = true; m.receiveShadow = true; this.group.add(m);
     if (G.head) G.head.call(this, tpl, m, o, nLights);
+    if (FIT_COLLIDERS.has(type)) this._fitColliders(m, tpl, this.world.boxes.slice(nBoxes));
     if (G.keep) { const keep = []; tmp.traverse((c) => { if (c.isMesh && c.material && c.material.map && G.keep(c)) keep.push(c); }); for (const c of keep) { c.getWorldPosition(c.position); c.getWorldQuaternion(c.quaternion); c.getWorldScale(c.scale); c.removeFromParent(); this.group.add(c); } }
   }
   /** Registers a point light definition. The engine streams the nearest few through a fixed pool, so maps can define many. */
@@ -498,7 +526,7 @@ export class MapBuilder {
     for (const r of this.roads) { ctx.lineWidth = r.width * k; ctx.beginPath(); ctx.moveTo(tx(r.x1), tz(r.z1)); ctx.lineTo(tx(r.x2), tz(r.z2)); ctx.stroke(); }
     for (const f of this.footprints) { ctx.save(); ctx.translate(tx(f.x), tz(f.z)); ctx.rotate(-f.rot); ctx.fillStyle = f.platform ? 'rgba(170,170,180,0.6)' : f.h > 12 ? '#8a8a96' : f.h > 6 ? '#777784' : '#66666f'; ctx.fillRect(-f.w * k / 2, -f.d * k / 2, f.w * k, f.d * k); ctx.restore(); }
     // small props as dots
-    for (const b of this.world.boxes) { if (b.kind !== 'prop') continue; const w = b.max.x - b.min.x, d = b.max.z - b.min.z; if (w > 12 || d > 12 || b.max.y - b.min.y < 0.8) continue; ctx.fillStyle = 'rgba(140,140,150,0.7)'; ctx.fillRect(tx(b.min.x), tz(b.min.z), w * k, d * k); }
+    for (const b of this.world.boxes) { if (b.kind !== 'prop') continue; if (b.hx > 6 || b.hz > 6 || b.max.y - b.min.y < 0.8) continue; ctx.save(); ctx.translate(tx(b.cx), tz(b.cz)); ctx.rotate(-b.rot); ctx.fillStyle = 'rgba(140,140,150,0.7)'; ctx.fillRect(-b.hx * k, -b.hz * k, 2 * b.hx * k, 2 * b.hz * k); ctx.restore(); }
     return c;
   }
 }
@@ -518,6 +546,72 @@ const geoSize = (mesh, axis) => { mesh.geometry.computeBoundingBox(); const bb =
 const firstMesh = (tmp, pred = () => true) => { let f = null; tmp.traverse((c) => { if (!f && c.isMesh && pred(c)) f = c; }); return f; };
 const hasMap = (c) => !!c.material.map;
 /** Which props use a generated mesh, and how to read the original's scale from its throwaway build. */
+// solid props whose colliders are fitted to the generated model (open structures keep their hand-made colliders)
+const FIT_COLLIDERS = new Set(['car', 'van', 'truck', 'bus', 'dumpster', 'container', 'crate', 'barrel', 'trashcan', 'hydrant', 'bench', 'picnic', 'tires',
+  'planter', 'barricade', 'barrier', 'sandbags', 'cart', 'mattress', 'pallet', 'newsstand', 'phonebooth', 'ac', 'bollard', 'grave', 'tomb', 'tent', 'trashpile', 'cone', 'rubble']);
+/**
+ * Fit boxes to a geometry (model space). The model is cut into a grid of height bands x slices along its longer
+ * horizontal axis; every triangle is clipped exactly into each cell it crosses, so each cell knows the true extent of
+ * the surface inside it (width across the model, and its real top and bottom). Cells with nothing in them stay empty
+ * (the space under a car between the wheels), then neighbours with nearly the same outline are merged: along the
+ * model first, then up through the bands. A car comes out as a dozen or so boxes that follow its bodywork.
+ */
+function fitBands(geo, tol = 0.035) {
+  geo.computeBoundingBox(); const bb = geo.boundingBox;
+  const long = bb.max.z - bb.min.z >= bb.max.x - bb.min.x ? 'z' : 'x', short = long === 'z' ? 'x' : 'z';
+  const L0 = bb.min[long], LL = Math.max(1e-3, bb.max[long] - L0), Y0 = bb.min.y, HH = Math.max(1e-3, bb.max.y - Y0);
+  const K = Math.max(3, Math.min(24, Math.round(HH / 0.1))), S = Math.max(1, Math.min(40, Math.round(LL / 0.22)));
+  const cells = Array.from({ length: K * S }, () => ({ s0: Infinity, s1: -Infinity, y0: Infinity, y1: -Infinity, l0: Infinity, l1: -Infinity }));
+  const pos = geo.attributes.position, idx = geo.index, nTri = (idx ? idx.count : pos.count) / 3;
+  const T = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  // Sutherland-Hodgman against one axis-aligned plane: keep the side where sign * (p[ax] - v) >= 0
+  const clip = (poly, ax, v, sign) => { const out = []; for (let i = 0; i < poly.length; i++) { const a = poly[i], c = poly[(i + 1) % poly.length], da = sign * (a[ax] - v), dc = sign * (c[ax] - v);
+    if (da >= 0) out.push(a); if ((da >= 0) !== (dc >= 0)) { const u = da / (da - dc); out.push({ x: a.x + (c.x - a.x) * u, y: a.y + (c.y - a.y) * u, z: a.z + (c.z - a.z) * u }); } } return out; };
+  for (let t = 0; t < nTri; t++) {
+    for (let j = 0; j < 3; j++) T[j].fromBufferAttribute(pos, idx ? idx.getX(t * 3 + j) : t * 3 + j);
+    const tri = T.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+    const ymn = Math.min(tri[0].y, tri[1].y, tri[2].y), ymx = Math.max(tri[0].y, tri[1].y, tri[2].y);
+    const lmn = Math.min(tri[0][long], tri[1][long], tri[2][long]), lmx = Math.max(tri[0][long], tri[1][long], tri[2][long]);
+    const k0 = Math.max(0, Math.floor(((ymn - Y0) / HH) * K)), k1 = Math.min(K - 1, Math.floor(((ymx - Y0) / HH) * K - 1e-9));
+    const s0 = Math.max(0, Math.floor(((lmn - L0) / LL) * S)), s1 = Math.min(S - 1, Math.floor(((lmx - L0) / LL) * S - 1e-9));
+    for (let k = Math.max(0, k0); k <= Math.max(k0, k1); k++) {
+      const ya = Y0 + (HH * k) / K, yb = Y0 + (HH * (k + 1)) / K;
+      const band = clip(clip(tri, 'y', ya, 1), 'y', yb, -1); if (band.length < 2) continue;
+      for (let si = Math.max(0, s0); si <= Math.max(s0, s1); si++) {
+        const la = L0 + (LL * si) / S, lb = L0 + (LL * (si + 1)) / S;
+        const poly = clip(clip(band, long, la, 1), long, lb, -1); if (poly.length < 2) continue;
+        const c = cells[k * S + si];
+        for (const p of poly) { if (p[short] < c.s0) c.s0 = p[short]; if (p[short] > c.s1) c.s1 = p[short]; if (p.y < c.y0) c.y0 = p.y; if (p.y > c.y1) c.y1 = p.y; if (p[long] < c.l0) c.l0 = p[long]; if (p[long] > c.l1) c.l1 = p[long]; }
+      }
+    }
+  }
+  // runs along the model within each band
+  const close = (a, b, t) => Math.abs(a - b) < t;
+  let boxes = [];
+  for (let k = 0; k < K; k++) {
+    let run = null;
+    for (let si = 0; si < S; si++) {
+      const c = cells[k * S + si]; if (c.s0 > c.s1) { run = null; continue; }
+      if (run && close(run.s0, c.s0, tol) && close(run.s1, c.s1, tol) && close(run.y1, c.y1, tol * 1.5) && close(run.y0, c.y0, tol * 1.5) && c.l0 - run.l1 < 0.05) {
+        run.s0 = Math.min(run.s0, c.s0); run.s1 = Math.max(run.s1, c.s1); run.y0 = Math.min(run.y0, c.y0); run.y1 = Math.max(run.y1, c.y1); run.l1 = Math.max(run.l1, c.l1);
+      } else { run = { ...c }; boxes.push(run); }
+    }
+  }
+  // stack: merge boxes sitting on each other with nearly the same footprint
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < boxes.length; i++) for (let j = 0; j < boxes.length; j++) {
+      if (i === j) continue; const a = boxes[i], b = boxes[j];
+      if (close(a.y1, b.y0, 0.03) && close(a.s0, b.s0, tol) && close(a.s1, b.s1, tol) && close(a.l0, b.l0, tol) && close(a.l1, b.l1, tol)) {
+        a.y1 = b.y1; a.s0 = Math.min(a.s0, b.s0); a.s1 = Math.max(a.s1, b.s1); a.l0 = Math.min(a.l0, b.l0); a.l1 = Math.max(a.l1, b.l1); boxes.splice(j, 1); merged = true; break outer;
+      }
+    }
+  }
+  // back to the x / y / z box form the builder expects; skip slivers
+  return boxes.filter((b) => b.y1 - b.y0 > 0.01 && b.s1 - b.s0 > 0.01 && b.l1 - b.l0 > 0.01)
+    .map((b) => (long === 'z' ? { x0: b.s0, x1: b.s1, z0: b.l0, z1: b.l1, y0: b.y0, y1: b.y1 } : { x0: b.l0, x1: b.l1, z0: b.s0, z1: b.s1, y0: b.y0, y1: b.y1 }));
+}
 const GLB_PROPS = {
   // lamp: the generated arm is longer than the old one, so the lens and the streamed light go to the real head
   lamp: { head(tpl, m, o, nLights) {
@@ -580,7 +674,9 @@ const PROPS = {
     for (const s of [-0.6, 0.6]) { const l = new THREE.Mesh(chamferBox(0.4, 0.2, 0.1), lm); l.position.set(s, 0.75, 2.2); g.add(l); const t = new THREE.Mesh(chamferBox(0.4, 0.2, 0.1), new THREE.MeshStandardMaterial({ color: '#b00', emissive: '#800', emissiveIntensity: 0.5 })); t.position.set(s, 0.75, -2.2); g.add(t); }
     if (o.wreck) { body.material = col('#2a2420', 0.95, 0.1); cab.material = col('#111', 0.9, 0); roof.material = body.material; }
     this.group.add(g);
-    this._collide(x, 0, z, 1.9, 1.65, 4.4, rot, { walkable: true });
+    // body to the beltline, then the shorter cabin on top (you can shoot over the hood and trunk)
+    this._collide(x, 0, z, 1.9, 1.0, 4.4, rot, { walkable: true });
+    this._collide(x - Math.sin(rot) * 0.2, 1.0, z - Math.cos(rot) * 0.2, 1.75, 0.68, 2.3, rot, { walkable: true });
   },
   van(x, z, rot, o, rng) {
     const color = o.color || rng.pick(['#e8e8e8', '#2a3a5a', '#8a2a2a', '#3a5a3a']);
@@ -598,7 +694,7 @@ const PROPS = {
     const box = new THREE.Mesh(chamferBox(2.4, 2.6, 5.5), bm); box.position.set(0, 1.9, -1.2); box.castShadow = true; g.add(box);
     const cab = new THREE.Mesh(chamferBox(2.3, 2.0, 2.2), cm); cab.position.set(0, 1.5, 2.6); cab.castShadow = true; g.add(cab);
     for (const [wx, wz] of [[-1.15, 2.6], [1.15, 2.6], [-1.15, -1.0], [1.15, -1.0], [-1.15, -2.4], [1.15, -2.4]]) { const w = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.3, 12), wm); w.rotation.z = Math.PI / 2; w.position.set(wx, 0.48, wz); g.add(w); }
-    this.group.add(g); this._collide(x, 0, z - 1.2, 2.4, 3.2, 5.5, rot, { walkable: true }); this._collide(x + Math.sin(rot) * 2.6, 0, z + Math.cos(rot) * 2.6, 2.3, 2.5, 2.2, rot, { walkable: true });
+    this.group.add(g); this._collide(x - Math.sin(rot) * 1.2, 0, z - Math.cos(rot) * 1.2, 2.4, 3.2, 5.5, rot, { walkable: true }); this._collide(x + Math.sin(rot) * 2.6, 0, z + Math.cos(rot) * 2.6, 2.3, 2.5, 2.2, rot, { walkable: true });
   },
   bus(x, z, rot, o, rng) {
     const bm = col(o.color || '#d9c23a', 0.5, 0.3), gm = col('#1b2430', 0.2, 0.6), wm = col('#111');

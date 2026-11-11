@@ -1,4 +1,7 @@
-// Simple, fast collision world: axis-aligned boxes in a uniform grid, plus capsule-ish actors.
+// Simple, fast collision world: boxes (axis-aligned, or turned about the vertical axis) in a uniform grid, plus
+// capsule-ish actors. Every box keeps an axis-aligned min/max that encloses it (grid placement, broad phase); the
+// exact tests (rays, actor push-out, floors) run in the box's own frame, so a car parked at 45 degrees blocks only
+// where the car is, not its whole enclosing square.
 import * as THREE from 'three';
 import { clamp } from './rng.js';
 
@@ -11,9 +14,24 @@ export class Box {
     this.max = new THREE.Vector3(maxX, maxY, maxZ);
     this.tag = tag; // 'solid' | 'cover' | 'noclimb'
     this.walkable = true;
+    // exact shape in XZ: centre, half extents along its own axes, yaw (cos / sin)
+    this.cx = (minX + maxX) / 2; this.cz = (minZ + maxZ) / 2; this.hx = (maxX - minX) / 2; this.hz = (maxZ - minZ) / 2; this.rot = 0; this.c = 1; this.s = 0;
   }
   static fromCenter(x, y, z, w, h, d, tag) { return new Box(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, tag); }
+  /** A box w x h x d centred on (x, z), standing on y, turned by `rot` about the vertical axis (three.js rotation.y). */
+  static oriented(x, y, z, w, h, d, rot, tag) {
+    const c = Math.cos(rot), s = Math.sin(rot), hx = w / 2, hz = d / 2, ex = Math.abs(c) * hx + Math.abs(s) * hz, ez = Math.abs(s) * hx + Math.abs(c) * hz;
+    const b = new Box(x - ex, y, z - ez, x + ex, y + h, z + ez, tag);
+    b.cx = x; b.cz = z; b.hx = hx; b.hz = hz; b.rot = rot; b.c = c; b.s = s; return b;
+  }
 }
+/** Point (x, z) in a box's own frame (local x along its width, local z along its depth). */
+function toBox(b, x, z, out) { const dx = x - b.cx, dz = z - b.cz; out[0] = dx * b.c - dz * b.s; out[1] = dx * b.s + dz * b.c; return out; }
+const _l = [0, 0];
+/** Does a circle of radius r at (x, z) overlap the box's footprint? (square-ish test, like the old AABB one) */
+export function boxHitsCircle(b, x, z, r) { toBox(b, x, z, _l); return Math.abs(_l[0]) < b.hx + r && Math.abs(_l[1]) < b.hz + r; }
+/** Horizontal distance from (x, z) to the box's footprint (0 inside). */
+export function boxDistXZ(b, x, z) { toBox(b, x, z, _l); const dx = Math.max(Math.abs(_l[0]) - b.hx, 0), dz = Math.max(Math.abs(_l[1]) - b.hz, 0); return Math.sqrt(dx * dx + dz * dz); }
 
 export class World {
   constructor(size = 200, cell = 8) {
@@ -36,6 +54,22 @@ export class World {
       for (let x = clamp(x0, 0, this.n - 1); x <= clamp(x1, 0, this.n - 1); x++) this.grid[z * this.n + x].push(box);
     return box;
   }
+  /** Take a box back out (map building only). */
+  remove(box) {
+    const i = this.boxes.indexOf(box); if (i >= 0) this.boxes.splice(i, 1);
+    for (const cell of this.grid) { const j = cell.indexOf(box); if (j >= 0) cell.splice(j, 1); }
+  }
+  /**
+   * Like near(), but compound colliders (a prop fitted with many small boxes, see MapBuilder._fitColliders) are
+   * opened up into their parts, and only when the query circle actually reaches the compound's outline.
+   */
+  nearParts(x, z, r, cb) {
+    this.near(x, z, r, (b) => {
+      if (!b.parts) return cb(b);
+      if (boxDistXZ(b, x, z) > r) return;
+      for (let i = 0; i < b.parts.length; i++) if (cb(b.parts[i]) === false) return false;
+    });
+  }
   // iterate boxes near a point with radius
   near(x, z, r, cb) {
     const x0 = Math.floor((x - r + this.size / 2) / this.cell) + 1, x1 = Math.floor((x + r + this.size / 2) / this.cell) + 1;
@@ -50,9 +84,9 @@ export class World {
   // Highest floor under point (x,z) with top <= y + step. Returns y of floor.
   floorAt(x, z, y, radius = 0.3, step = STEP_HEIGHT) {
     let best = this.groundY;
-    this.near(x, z, radius, (b) => {
+    this.nearParts(x, z, radius, (b) => {
       if (!b.walkable) return;
-      if (x + radius > b.min.x && x - radius < b.max.x && z + radius > b.min.z && z - radius < b.max.z) {
+      if (boxHitsCircle(b, x, z, radius)) {
         if (b.max.y <= y + step && b.max.y > best && b.min.y < y + step) best = b.max.y;
       }
     });
@@ -61,8 +95,8 @@ export class World {
   // Ceiling above the actor: lowest box bottom above y within radius
   ceilingAt(x, z, y, radius = 0.3) {
     let best = Infinity;
-    this.near(x, z, radius, (b) => {
-      if (x + radius > b.min.x && x - radius < b.max.x && z + radius > b.min.z && z - radius < b.max.z) {
+    this.nearParts(x, z, radius, (b) => {
+      if (boxHitsCircle(b, x, z, radius)) {
         if (b.min.y >= y && b.min.y < best) best = b.min.y;
       }
     });
@@ -74,22 +108,26 @@ export class World {
     const y0 = footY + STEP_HEIGHT + 0.02, y1 = footY + height - 0.02; // ignore things we can step over
     for (let iter = 0; iter < 3; iter++) {
       let moved = false;
-      this.near(pos.x, pos.z, radius + 0.5, (b) => {
+      this.nearParts(pos.x, pos.z, radius + 0.5, (b) => {
         if (b.max.y <= y0 || b.min.y >= y1) return;
-        const cx = clamp(pos.x, b.min.x, b.max.x), cz = clamp(pos.z, b.min.z, b.max.z);
-        let dx = pos.x - cx, dz = pos.z - cz;
+        // in the box's own frame
+        toBox(b, pos.x, pos.z, _l); let lx = _l[0], lz = _l[1];
+        const qx = clamp(lx, -b.hx, b.hx), qz = clamp(lz, -b.hz, b.hz);
+        const dx = lx - qx, dz = lz - qz;
         const d2 = dx * dx + dz * dz;
         if (d2 >= radius * radius) return;
         hit = true; moved = true;
         if (d2 < 1e-8) {
           // inside the box: push out along the smallest axis
-          const l = pos.x - b.min.x, r = b.max.x - pos.x, t = pos.z - b.min.z, bt = b.max.z - pos.z;
+          const l = lx + b.hx, r = b.hx - lx, t = lz + b.hz, bt = b.hz - lz;
           const m = Math.min(l, r, t, bt);
-          if (m === l) pos.x = b.min.x - radius; else if (m === r) pos.x = b.max.x + radius; else if (m === t) pos.z = b.min.z - radius; else pos.z = b.max.z + radius;
+          if (m === l) lx = -b.hx - radius; else if (m === r) lx = b.hx + radius; else if (m === t) lz = -b.hz - radius; else lz = b.hz + radius;
         } else {
           const d = Math.sqrt(d2); const push = radius - d;
-          pos.x += (dx / d) * push; pos.z += (dz / d) * push;
+          lx += (dx / d) * push; lz += (dz / d) * push;
         }
+        // back to world (local -> world: x = lx c + lz s, z = -lx s + lz c)
+        pos.x = b.cx + lx * b.c + lz * b.s; pos.z = b.cz - lx * b.s + lz * b.c;
       });
       if (!moved) break;
     }
@@ -106,29 +144,41 @@ export class World {
     // DDA-ish: step through grid cells along the ray and test boxes (dedupe)
     let bestT = maxT, bestBox = null, bestN = null;
     const seen = this._rseen || (this._rseen = new Set()); seen.clear();
-    const invX = 1 / dir.x, invY = 1 / dir.y, invZ = 1 / dir.z;
-    const test = (b) => {
-      if (seen.has(b)) return; seen.add(b);
-      if (filter && !filter(b)) return;
-      let tmin = (b.min.x - origin.x) * invX, tmax = (b.max.x - origin.x) * invX;
+    const invY = 1 / dir.y; let hitAxis = 0, hitLdx = 0, hitLdz = 0;
+    // slab test in the box's own frame (identity for axis-aligned boxes): entry distance, or Infinity
+    const slab = (b) => {
+      const ox = origin.x - b.cx, oz = origin.z - b.cz, lox = ox * b.c - oz * b.s, loz = ox * b.s + oz * b.c;
+      const ldx = dir.x * b.c - dir.z * b.s, ldz = dir.x * b.s + dir.z * b.c, invX = 1 / ldx, invZ = 1 / ldz;
+      let tmin = (-b.hx - lox) * invX, tmax = (b.hx - lox) * invX;
       if (tmin > tmax) [tmin, tmax] = [tmax, tmin];
       let tymin = (b.min.y - origin.y) * invY, tymax = (b.max.y - origin.y) * invY;
       if (tymin > tymax) [tymin, tymax] = [tymax, tymin];
-      if (tmin > tymax || tymin > tmax) return;
+      if (tmin > tymax || tymin > tmax) return Infinity;
       let axis = 0;
       if (tymin > tmin) { tmin = tymin; axis = 1; }
       if (tymax < tmax) tmax = tymax;
-      let tzmin = (b.min.z - origin.z) * invZ, tzmax = (b.max.z - origin.z) * invZ;
+      let tzmin = (-b.hz - loz) * invZ, tzmax = (b.hz - loz) * invZ;
       if (tzmin > tzmax) [tzmin, tzmax] = [tzmax, tzmin];
-      if (tmin > tzmax || tzmin > tmax) return;
+      if (tmin > tzmax || tzmin > tmax) return Infinity;
       if (tzmin > tmin) { tmin = tzmin; axis = 2; }
       if (tzmax < tmax) tmax = tzmax;
-      if (tmax < 0 || tmin > bestT) return;
-      const t = tmin < 0 ? 0 : tmin;
-      if (t < bestT) {
-        bestT = t; bestBox = b;
-        bestN = axis === 0 ? new THREE.Vector3(-Math.sign(dir.x), 0, 0) : axis === 1 ? new THREE.Vector3(0, -Math.sign(dir.y), 0) : new THREE.Vector3(0, 0, -Math.sign(dir.z));
-      }
+      if (tmax < 0) return Infinity;
+      hitAxis = axis; hitLdx = ldx; hitLdz = ldz;
+      return tmin < 0 ? 0 : tmin;
+    };
+    const consider = (b) => {
+      const t = slab(b); if (t >= bestT) return;
+      bestT = t; bestBox = b;
+      if (hitAxis === 1) bestN = new THREE.Vector3(0, -Math.sign(dir.y), 0);
+      else { const nx = hitAxis === 0 ? -Math.sign(hitLdx) : 0, nz = hitAxis === 2 ? -Math.sign(hitLdz) : 0; bestN = new THREE.Vector3(nx * b.c + nz * b.s, 0, -nx * b.s + nz * b.c); }
+    };
+    const test = (b) => {
+      if (seen.has(b)) return; seen.add(b);
+      if (filter && !filter(b)) return;
+      if (!b.parts) { consider(b); return; }
+      // compound: its outline first, the parts only when the ray reaches it
+      if (slab(b) >= bestT) return;
+      for (let i = 0; i < b.parts.length; i++) consider(b.parts[i]);
     };
     // walk cells
     const cell = this.cell, half = this.size / 2;
