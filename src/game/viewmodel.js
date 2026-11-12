@@ -130,12 +130,25 @@ export class ViewModel {
    * up under the handguard a third of the way along it.
    */
   _armGrips(f) {
+    // gun space: +z to the muzzle, +y up, +x the shooter's LEFT. F runs wrist -> knuckles, N is the palm's facing.
+    // The hand sculpts are slightly cupped mittens, so a hold reads right when the cup's axis (F x N) lies along what
+    // the hand wraps and the hand axis stays within a natural wrist bend of the forearm behind it.
     const pistol = f.hold === 'pistol';
-    this.gripR = { p: new THREE.Vector3(-0.026, f.grip[1], f.grip[0]), F: pistol ? n3(0.1, -0.55, 0.83) : n3(0.2, -0.62, 0.76), N: n3(1, 0, 0) };
-    if (pistol) this.gripL = { p: new THREE.Vector3(0.03, f.grip[1] - 0.014, f.grip[0] - 0.004), F: n3(-0.1, -0.6, 0.8), N: n3(-1, 0, 0) };
-    else if (f.vgrip) this.gripL = { p: new THREE.Vector3(0.026, f.fore[2], f.fore[0]), F: n3(-0.15, -0.55, 0.82), N: n3(-1, 0, 0) };
-    else { const z = f.fore[0] + (f.fore[1] - f.fore[0]) * 0.35, under = this._underside(z); this.gripL = { p: new THREE.Vector3(0.006, (under !== null ? under : f.fore[2]) - 0.026, z), F: n3(0.25, 0.12, 0.96), N: n3(-0.35, 0.94, 0) }; }
-    this.leftBase = this.gripL.p.clone(); this.leftG = this.gripL.p.clone();
+    // shooting hand: palm against the right of the grip, fingers round its front, angled down with the grip's rake
+    this.gripR = { p: new THREE.Vector3(-0.024, f.grip[1], f.grip[0]), F: pistol ? n3(0.06, -0.3, 0.95) : n3(0.08, -0.36, 0.93), N: n3(1, 0, 0.04) };
+    if (pistol) { // support hand: palm into the gap on the left of the grip, fingers over the shooting hand's
+      this.gripL = { p: new THREE.Vector3(0.028, f.grip[1] - 0.012, f.grip[0] - 0.006), F: n3(-0.2, -0.36, 0.91), N: n3(-0.95, 0.3, 0) };
+    } else if (f.vgrip) { // wrapped round the vertical grip like a second pistol grip
+      this.gripL = { p: new THREE.Vector3(0.024, f.fore[2], f.fore[0]), F: n3(-0.12, -0.22, 0.97), N: n3(-1, 0.1, 0) };
+    } else { // palm under the lower-left of the handguard, hand angled across it so the fingers wrap the far side
+      const z = f.fore[0] + (f.fore[1] - f.fore[0]) * 0.35, under = this._underside(z), y = under !== null ? under : f.fore[2];
+      const N = n3(-0.55, 0.83, 0), F = n3(-0.45, 0.25, 0.86);
+      this.gripL = { p: new THREE.Vector3(0, y - 0.004, z).addScaledVector(N, -0.017), F, N };
+    }
+    this.leftBase = this.gripL.p.clone(); this.leftG = this.gripL.p.clone(); this.leftF = this.gripL.F.clone(); this.leftN = this.gripL.N.clone();
+    // reload hand orientations: palm up under the magazine; palm on the receiver for a charging handle, or palm down
+    // over a pistol's slide
+    this.rlHand = { magF: n3(-0.25, 0.15, 0.95), magN: n3(-0.2, 1, 0), rackF: pistol ? n3(-0.4, -0.1, 0.9) : n3(-0.1, 0.25, 0.96), rackN: pistol ? n3(-0.2, -1, 0) : n3(-1, 0, 0.1) };
   }
   /**
    * Pose the real arms (rig space = the figure's own: +Z forward, +X its left, eye at the origin). Each arm's shoulder
@@ -148,7 +161,7 @@ export class ViewModel {
     this.camera.updateMatrixWorld(true);
     f.begin(rig); _I.copy(rig.matrixWorld).invert(); _M.copy(_I).multiply(this.gun.matrixWorld); // gun -> rig space
     _tR.copy(this.gripR.p).applyMatrix4(_M); _FR.copy(this.gripR.F).transformDirection(_M); _NR.copy(this.gripR.N).transformDirection(_M);
-    _tL.copy(this.leftG).applyMatrix4(_M); _FL.copy(this.gripL.F).transformDirection(_M); _NL.copy(this.gripL.N).transformDirection(_M);
+    _tL.copy(this.leftG).applyMatrix4(_M); _FL.copy(this.leftF || this.gripL.F).transformDirection(_M); _NL.copy(this.leftN || this.gripL.N).transformDirection(_M);
     // throwing / calling in: the left hand leaves the gun for the grenade or the phone
     const k = this.throwT >= 0 ? this.throwT : this.callT;
     if (k >= 0) {
@@ -163,8 +176,11 @@ export class ViewModel {
       f.pos(side + 'Arm', _A); const d = _A.distanceTo(T);
       if (d > reach && sh) { _P.subVectors(_A, T).normalize().multiplyScalar(reach).add(T); f.pos(side + 'Shoulder', _w).add(_P).sub(_A); f.setBonePos(side + 'Shoulder', _w); }
       f.pos(side + 'Arm', _P);
-      _pole.set(sg * 0.35, -0.8, -0.15).add(_P);
-      f.arm(side, T, F, N, _pole);
+      // elbows hang down and out (pistols: arms out in front, elbows down); a pistol hand sits angled down off the
+      // forearm by the grip's angle, so its wrist is allowed more bend than a rifle's
+      const pistol = fit.hold === 'pistol';
+      _pole.set(sg * (pistol ? 0.18 : 0.35), -0.8, pistol ? -0.05 : -0.15).add(_P);
+      f.armFP(side, T, F, N, _pole, pistol ? 0.85 + 0.35 * (this.adsK || 0) : 0.6); // aiming: the wrists are hidden behind the hands
     }
     // the grenade / phone sits in the real left palm, just in front of it
     if (k >= 0) {
@@ -247,13 +263,13 @@ export class ViewModel {
     this.kick = damp(this.kick, 0, 16, dt); this.kickRot = damp(this.kickRot, 0, 14, dt);
     // base poses
     const sightY = fit ? fit.sight : d.pistol ? h2(d) * 0.6 + 0.015 : (d.scope ? h2(d) + 0.035 + d.scope * 0 : h2(d) + 0.015);
-    const hipPos = fit && d.pistol ? new THREE.Vector3(0.15, -0.17, -0.34) : new THREE.Vector3(0.17, -0.19 - (d.pistol ? 0.02 : 0), -0.36 - (d.pistol ? 0 : 0.05));
+    const hipPos = fit && d.pistol ? new THREE.Vector3(0.15, -0.18, -0.4) : new THREE.Vector3(0.17, -0.19 - (d.pistol ? 0.02 : 0), -0.36 - (d.pistol ? 0 : 0.05));
     // narrower views (split screen halves) bring the gun in so it sits in the same place on screen as on a wide one
     const xk = Math.min(1, Math.max(0.5, (this.camera.aspect || 1.78) / 1.78)); hipPos.x *= xk;
-    const adsZ = -0.28 - (d.pistol ? 0 : 0.08);
+    const adsZ = d.pistol ? -0.46 : -0.36; // a pistol is held out at arm's length, so the hands don't swamp the view
     const fitY = this._adsY(adsZ);
     const adsPos = new THREE.Vector3(0, fitY !== null ? Math.min(-sightY, fitY) : -sightY, adsZ);
-    const pos = hipPos.lerp(adsPos, ads);
+    const pos = hipPos.lerp(adsPos, ads); this.adsK = ads;
     const rot = new THREE.Vector3(0, 0, 0);
     // sprint: lower and angle the gun
     pos.lerp(new THREE.Vector3(0.2 * xk, -0.21, -0.34), spr); rot.x -= spr * 0.3; rot.y += spr * 0.55; rot.z += spr * 0.2;
@@ -278,7 +294,13 @@ export class ViewModel {
       if (pistol) P[5].set(0.0, fit.sight + 0.015, 0.02); else P[5].set(0.07, fit.sight * 0.5, fit.grip[0] + 0.07);
       P[6].copy(P[5]).add(new THREE.Vector3(0, 0, -0.06)); P[7].copy(this.leftBase);
       const hp = pathAt(this._rlHp || (this._rlHp = new THREE.Vector3()), P, ks, rk);
-      if (this.arms) this.leftG.lerpVectors(this.leftBase, hp, rl); else this.leftHand.position.lerpVectors(this.leftBase, hp, rl);
+      if (this.arms) {
+        this.leftG.lerpVectors(this.leftBase, hp, rl);
+        // turn the hand for each beat: onto the magazine, then onto the charging handle / slide
+        const H = this.rlHand, wm = env(rk, 0.06, 0.16, 0.56, 0.64) * rl, wr = env(rk, 0.6, 0.7, 0.82, 0.92) * rl;
+        this.leftF.copy(this.gripL.F).lerp(H.magF, wm).lerp(H.rackF, wr).normalize();
+        this.leftN.copy(this.gripL.N).lerp(H.magN, wm).lerp(H.rackN, wr).normalize();
+      } else this.leftHand.position.lerpVectors(this.leftBase, hp, rl);
     }
     // lowered: weapon swap, throwing, calling in a streak
     let actLow = 0;

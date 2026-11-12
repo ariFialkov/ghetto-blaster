@@ -196,6 +196,51 @@ export class Figure {
     if (hq) this._setRootQ(side + 'Hand', hq);
     else { this.b[side + 'Hand'].quaternion.copy(this.rest[side + 'Hand'].lq); this.b[side + 'Hand'].updateMatrixWorld(true); }
   }
+  /**
+   * First-person arm: like arm(), but the wrist stays natural. A real wrist bends a limited amount and barely
+   * twists; the forearm does the rolling (pronation). So the forearm turns toward the hand's own axis until the wrist
+   * bends no more than `maxBend` (radians), the shoulder (off screen in first person) slides so the upper arm still
+   * reaches the elbow, and the forearm takes the hand's roll so the wrist has no twist left.
+   */
+  armFP(side, target, F, N, pole, maxBend = 0.42) {
+    const h = this.hand[side]; if (!h) { this.arm(side, target, F, N, pole); return; }
+    const hq = this._handQ(side, F, N, Q()), [l1, l2] = this.len[side];
+    const W = V().copy(h.palm).applyQuaternion(hq).negate().add(target); // the wrist
+    const Qd = hq.clone().multiply(_q.copy(this.rest[side + 'Hand'].lq).invert()); // forearm frame for a straight wrist
+    const D0 = V().copy(Y).applyQuaternion(Qd); // ... and its direction (bones run along +Y)
+    // where the elbow would naturally go from the current shoulder, bending toward the pole
+    const A = this._pos(side + 'Arm', V()), d = V().subVectors(W, A), dist = Math.min(Math.max(d.length(), 1e-4), (l1 + l2) * 0.999); d.normalize();
+    const x = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist), hh = Math.sqrt(Math.max(0, l1 * l1 - x * x));
+    const pl = V().copy(pole).sub(A); pl.addScaledVector(d, -pl.dot(d)); if (pl.lengthSq() < 1e-8) pl.set(0, -1, 0); pl.normalize();
+    const E = V().copy(A).addScaledVector(d, x).addScaledVector(pl, hh);
+    // forearm direction: the natural one, turned toward the hand's axis until the wrist bend is within limits
+    const Dn = V().subVectors(W, E).normalize(), ang = Dn.angleTo(D0);
+    if (ang > maxBend) {
+      const ax = V().crossVectors(D0, Dn); if (ax.lengthSq() < 1e-10) ax.set(1, 0, 0); ax.normalize();
+      Dn.copy(D0).applyAxisAngle(ax, maxBend);
+      E.copy(W).addScaledVector(Dn, -l2);
+      // the shoulder slides so the upper arm (length l1) meets the new elbow from as close to where it was as it can
+      const A2 = V().subVectors(A, E); if (A2.lengthSq() < 1e-8) A2.set(0, 0, -1); A2.normalize().multiplyScalar(l1).add(E);
+      const sh = side + 'Shoulder';
+      if (this.b[sh]) { this.setBonePos(sh, this._pos(sh, V()).add(A2).sub(A)); }
+    }
+    // solve with the elbow on its chosen spot (pole pushed out from the chain through it)
+    const A3 = this._pos(side + 'Arm', V()), mid = V().addVectors(A3, W).multiplyScalar(0.5), p2 = V().subVectors(E, mid);
+    _pole.copy(p2.lengthSq() > 1e-8 ? p2.normalize().multiplyScalar(0.3).add(E) : pole);
+    this._ik(side + 'Arm', side + 'ForeArm', this.len[side], W, _pole);
+    // pronation: the forearm rolls about its own axis to take the twist the wrist would otherwise carry. With the elbow
+    // near straight the upper arm shares it (it can rotate freely then), so a reaching arm doesn't wring at the elbow.
+    const twistOf = (bone) => { const dl = this.quat(bone, Q()).invert().multiply(Qd), t = Q().set(0, dl.y, 0, dl.w); if (t.lengthSq() < 1e-10) return 0; t.normalize(); if (t.w < 0) t.set(-t.x, -t.y, -t.z, -t.w); return Math.sign(t.y) * 2 * Math.acos(Math.min(1, t.w)); };
+    const roll = (bone, a) => { if (!a) return; const b = this.b[bone]; b.quaternion.multiply(_q.setFromAxisAngle(Y, a)); b.updateMatrixWorld(true); };
+    const Ae = this._pos(side + 'Arm', V()), Ee = this._pos(side + 'ForeArm', V()), elbow = V().subVectors(Ae, Ee).angleTo(V().subVectors(W, Ee)); // pi = straight
+    const share = Math.min(1, Math.max(0, (elbow - 2.4) / 0.6)) * 0.5;
+    if (share > 0) { // turn the whole arm about the shoulder-wrist line: the hand stays put, the elbow barely moves
+      const ax = V().subVectors(W, Ae).normalize(), R = Q().setFromAxisAngle(ax, twistOf(side + 'ForeArm') * share);
+      this._setRootQ(side + 'Arm', R.multiply(this.quat(side + 'Arm', Q())));
+    }
+    roll(side + 'ForeArm', Math.max(-1.6, Math.min(1.6, twistOf(side + 'ForeArm')))); // a forearm rolls about 90 degrees either way
+    this._setRootQ(side + 'Hand', hq);
+  }
   /** Leg IK: ankle to `ankle`, knee towards `pole`, foot turned by the group-space delta `footQ`. */
   leg(side, ankle, footQ, pole) {
     _ta.copy(ankle); _pole.copy(pole);

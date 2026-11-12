@@ -9,13 +9,13 @@ import { MAPS, loadMap } from './maps/index.js';
 import { Match } from './game/match.js';
 import { MODES } from './game/modes.js';
 import { getSave, persist, allLoadouts, resolveLoadout } from './game/loadouts.js';
-import { findStreak } from './game/streaks.js';
+import { findStreak, streaksForMap } from './game/streaks.js';
 import { HUD } from './ui/hud.js';
 import * as UI from './ui/menu.js';
 import { PadNav } from './ui/padnav.js';
 import { loadModels } from './game/models.js';
 import { btn, padLabel } from './ui/padglyphs.js';
-import { SplitPause, NavRepeat, padNav as padMenuEv } from './ui/splitpause.js';
+import { SplitPause, SplitLoadout, NavRepeat, padNav as padMenuEv } from './ui/splitpause.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('gl');
@@ -161,16 +161,16 @@ function startMatch() {
   hud.bind(m, { onOpenLoadout: () => openLoadout(), onScoreboard: (on) => (on ? UI.showScoreboard(m, quitMatch) : UI.hideScoreboard()), onPause: () => pauseMatch() });
   document.body.classList.toggle('split', !!m.player2);
   if (m.player2) { hud2 = hud2 || makeHud2(); hud2.bind(m, {}, m.player2); }
-  m.events.live = () => { UI.hideLoadoutSelector(); if (!input.mobile && !input.locked) input.requestLock(); };
+  m.events.live = () => { UI.hideLoadoutSelector(); if (sp.open && sp.kind === 'loadout') closeSplitPanels(); if (!input.mobile && !input.locked && !(input.split && input.split.mode === 'pad2')) input.requestLock(); };
   m.events.end = (res) => endMatch(res);
   input.setEnabled(true);
-  openLoadout();
+  if (m.player2) openSplitLoadout(); else openLoadout();
   // pointer lock loss during a live desktop match = pause
   document.addEventListener('pointerlockchange', onLockChange);
 }
 function onLockChange() { if (sp.open) return; if (app.state === 'match' && !document.pointerLockElement && !input.mobile && app.match && app.match.state === 'live' && $('screen-loadout').classList.contains('hidden') && $('screen-dialog').classList.contains('hidden')) pauseMatch(); }
 function openLoadout(midMatch = false) {
-  const m = app.match; if (!m || m.state === 'ended') return;
+  const m = app.match; if (!m || m.state === 'ended' || (m.player2 && sp.open)) return; // split screen: each player has their own panel
   input.releaseLock();
   const gunGame = m.mode.id === 'gungame';
   const before = { loadout: m.player.nextLoadout?.id || m.player.loadout.id, streaks: (m.player.nextStreaks || m.streakState.picks).map((d) => d && d.id).join() };
@@ -214,16 +214,14 @@ function pauseMatch() {
   openPause();
 }
 // ---------------- split-screen pause: the match freezes, each player gets their own panel ----------------
-const sp = { open: false, panels: [], reps: [new NavRepeat(), new NavRepeat()] };
+const sp = { open: false, kind: null, panels: [], reps: [new NavRepeat(), new NavRepeat()] };
 const splitDevice = (slot) => { const mode = input.split ? input.split.mode : 'kbd'; return slot === 1 ? (mode === 'pad2' ? 'pad' : 'kbm') : (mode === 'kbd' ? 'keys' : 'pad'); };
 const pickIds = (st) => st.picks.map((d) => d && d.id);
 function openSplitPause() {
   const m = app.match; if (sp.open || !m || m.state !== 'live') return; // pre-game: the loadout screen is up
-  sp.open = true; input.setEnabled(false); input.releaseLock(); input.menuKeys.length = 0; UI.hideScoreboard();
+  sp.open = true; sp.kind = 'pause'; input.setEnabled(false); input.releaseLock(); input.menuKeys.length = 0; UI.hideScoreboard();
   const gunGame = m.mode.id === 'gungame';
-  const p1 = { slot: 1, settings: () => settings, onSettings: (s) => applySettings(s),
-    pick: () => ({ loadoutId: app.pick.loadoutId, streaks: app.pick.streaks || pickIds(m.streakState) }),
-    onPick: (p) => { app.pick = p; save.lastLoadout = p.loadoutId; save.lastStreaks = save.lastStreaks || {}; save.lastStreaks[app.mapId] = p.streaks.slice(); persist(); applyPick(); } };
+  const p1 = { slot: 1, settings: () => settings, onSettings: (s) => applySettings(s), pick: pick1, onPick: onPick1 };
   const p2 = { slot: 2, settings: () => save.settings2, onSettings: (s) => applySettings2(s),
     pick: () => ({ loadoutId: app.pick2.loadoutId || (m.player2.nextLoadout || m.player2.loadout).id, streaks: app.pick2.streaks || pickIds(m.player2.streakState || m.streakState) }),
     onPick: (p) => applyPick2(p) };
@@ -231,10 +229,35 @@ function openSplitPause() {
   sp.panels = [mk(p1, hud), mk(p2, hud2)];
   sfx('click');
 }
+const pick1 = () => ({ loadoutId: app.pick.loadoutId, streaks: app.pick.streaks || pickIds(app.match.streakState) });
+function onPick1(p) { app.pick = p; save.lastLoadout = p.loadoutId; save.lastStreaks = save.lastStreaks || {}; save.lastStreaks[app.mapId] = p.streaks.slice(); persist(); applyPick(); }
+/** Split screen pre-game: a loadout panel per player instead of the one full-screen selector. The countdown runs a
+ *  little longer for two players and cuts short once both are ready. */
+function openSplitLoadout() {
+  const m = app.match; if (!m || !m.player2 || sp.open) return;
+  sp.open = true; sp.kind = 'loadout'; input.setEnabled(false); input.releaseLock(); input.menuKeys.length = 0;
+  m.pregameT = Math.max(m.pregameT, 15);
+  const gunGame = m.mode.id === 'gungame', all = streaksForMap(app.mapId);
+  // player 1 starts on their last picks; player 2 on theirs (or player 1's until they choose)
+  onPick1({ loadoutId: app.pick.loadoutId, streaks: (save.lastStreaks && save.lastStreaks[app.mapId]) || [all.starter[0].id, all.medium[0].id, all.powerful[0].id] });
+  const pick2 = () => ({ loadoutId: app.pick2.loadoutId || app.pick.loadoutId, streaks: app.pick2.streaks || app.pick.streaks });
+  const onReady = () => { if (sp.panels.length === 2 && sp.panels.every((p) => p.ready)) m.pregameT = Math.min(m.pregameT, 0.8); };
+  const mk = (slot, h, pick, onPick) => new SplitLoadout(h.el, { slot, device: splitDevice(slot), padType: () => (slot === 1 ? input.padType : input.second.padType), mapId: app.mapId, gunGame, pick, onPick, onReady });
+  sp.panels = [
+    mk(1, hud, pick1, (p) => { onPick1(p); if (!app.pick2.loadoutId && sp.panels[1]) sp.panels[1].render(); }),
+    mk(2, hud2, pick2, (p) => applyPick2(p)),
+  ];
+}
 function applyPick2(p) {
   const m = app.match, p2 = m && m.player2; if (!p2) return;
   app.pick2 = { loadoutId: p.loadoutId, streaks: p.streaks.slice() };
   save.pick2 = { loadoutId: p.loadoutId, streaks: { ...((save.pick2 && save.pick2.streaks) || {}), [app.mapId]: p.streaks.slice() } }; persist();
+  if (m.state === 'pregame') { // before the start: what player 2 goes in with (see Match.goLive)
+    const lo = allLoadouts().find((l) => l.id === p.loadoutId && !l.empty), r = lo ? resolveLoadout(lo) : null;
+    m.p2Pick = { loadout: r, streaks: p.streaks.map((id) => findStreak(app.mapId, id)) };
+    if (r && m.mode.id !== 'gungame') p2.setLoadout(r);
+    return;
+  }
   if (m.mode.id !== 'gungame') {
     const lo = allLoadouts().find((l) => l.id === p.loadoutId && !l.empty);
     if (lo) { const r = resolveLoadout(lo); p2.nextLoadout = r.id === p2.loadout.id ? null : r; }
@@ -242,10 +265,13 @@ function applyPick2(p) {
   const st = p2.streakState || m.streakState, defs = p.streaks.map((id) => findStreak(app.mapId, id));
   p2.nextStreaks = defs.every((d, i) => d === st.picks[i]) ? null : defs;
 }
+function closeSplitPanels() {
+  sp.panels.forEach((p) => p.dispose()); sp.panels = []; sp.open = false; sp.kind = null; input.menuKeys.length = 0; input.setEnabled(true);
+}
 function closeSplitPause(resume = true) {
   if (!sp.open) return;
-  const changed = sp.panels.map((p) => p.changed); sp.panels.forEach((p) => p.dispose()); sp.panels = []; sp.open = false; input.menuKeys.length = 0;
-  if (!resume) return;
+  const kind = sp.kind, changed = sp.panels.map((p) => p.changed); sp.panels.forEach((p) => p.dispose()); sp.panels = []; sp.open = false; sp.kind = null; input.menuKeys.length = 0;
+  if (!resume || kind !== 'pause') return;
   input.setEnabled(true); if (input.split && input.split.mode !== 'pad2') input.requestLock();
   const m = app.match; [m.player, m.player2].forEach((p, i) => { if (changed[i] && p && p.alive) (i ? hud2 : hud).message('CHANGES APPLY ON NEXT SPAWN', 2.2); });
   sfx('beep', { freq: 990 });
@@ -267,7 +293,8 @@ function updateSplitPause(dt) {
   // controllers
   if (sp.open && mode === 'pad2' && input.pad) sp.panels[0].handle(padMenuEv(sp.reps[0], input.padJust, input.padPrev, input.padAxes, dt));
   if (sp.open && !shared && input.second && input.second.padState.gp) { const ps = input.second.padState; sp.panels[1].handle(padMenuEv(sp.reps[1], ps.just, ps.prev, ps.axes, dt)); }
-  if (sp.open && sp.panels.every((p) => p.ready)) closeSplitPause(true);
+  if (sp.open && sp.kind === 'pause' && sp.panels.every((p) => p.ready)) closeSplitPause(true);
+  if (sp.open && sp.kind === 'loadout') for (const p of sp.panels) p.setTimer(app.match.pregameT);
 }
 function leaveSplit() { closeSplitPause(false); if (hud2) hud2.hide(); document.body.classList.remove('split'); input.setSplit(null); }
 function quitMatch() { document.removeEventListener('pointerlockchange', onLockChange); UI.hideScoreboard(); hud.hide(); leaveSplit(); input.setEnabled(false); enterTitle(app.mapId); }
@@ -290,7 +317,7 @@ engine.onFrame = (dt) => {
   if (app.state === 'lobby') { if (app.match) { updateCinematicLobby(dt); } return; }
   if (app.state === 'match' || app.state === 'results') {
     const m = app.match; if (!m) return;
-    if (app.state === 'match' && sp.open) { updateSplitPause(dt); return; }
+    if (app.state === 'match' && sp.open) { updateSplitPause(dt); if (sp.kind === 'pause') return; }
     if (app.state === 'match' && (!$('screen-dialog').classList.contains('hidden') || app.midLoadout)) { /* paused (menu or mid-match loadout): freeze */ return; }
     m.update(dt);
     if (app.state === 'match') { hud.update(dt); if (m.player2 && hud2) hud2.update(dt); if (m.state === 'pregame') UI.loadoutTimer(m.pregameT); }

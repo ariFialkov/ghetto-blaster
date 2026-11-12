@@ -70,7 +70,8 @@ export function lobbySlots(mode, players, total) {
 }
 
 // ---------------- loadout selector (pre-game) ----------------
-const TIER_COLORS = { starter: '#7cd3ff', medium: '#ffd166', powerful: '#ff7a1a' };
+export const TIER_COLORS = { starter: '#7cd3ff', medium: '#ffd166', powerful: '#ff7a1a' };
+export { wIcon, eIcon };
 export function showLoadoutSelector(mapId, current, onPick, onReady, opts = {}) {
   show('screen-loadout');
   const list = $('loadout-list'); const detail = $('loadout-detail'); const sp = $('streak-pick');
