@@ -227,6 +227,8 @@ export class ViewModel {
     const hit = new THREE.Raycaster(o, up, 0, 2).intersectObject(this.gun, true)[0];
     return hit ? H.worldToLocal(hit.point.clone()).y : null;
   }
+  /** Take everything this view model hung on its camera off again (the camera outlives the match). */
+  dispose() { for (const o of [this.root, this.freeRig, this.armRig]) if (o && o.parent) o.parent.remove(o); }
   muzzleWorld(out) { if (!this.gun) return out.copy(this.camera.position); return out.copy(this.gun.userData.muzzle).applyMatrix4(this.gun.matrixWorld); }
   onShot(w) { this.kick = Math.min(0.12, this.kick + w.recoilV * 0.02 + 0.015); this.kickRot = Math.min(0.25, this.kickRot + w.recoilV * 0.03); }
   /** st: { ads, sprint, moving, speed, onGround, vy, vRight, vFwd, reloading, reloadT, reloadTime, look:{dx,dy}, bobPhase, dead, hidden, lean, slide, crawl } */

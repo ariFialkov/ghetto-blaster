@@ -37,13 +37,18 @@ export function showModes(arts, wallet, onPick) {
   });
 }
 /** Desktop: 1 or 2 players (split screen). Shows how player 2 will play with what's plugged in right now. */
-export function playersToggle(n, onChange, assign) {
+export function playersToggle(n, onChange, getAssign) {
   let el = $('players-toggle');
   if (!el) { el = document.createElement('div'); el.id = 'players-toggle'; el.className = 'players-toggle'; document.querySelector('#screen-modes .modes-header').appendChild(el); }
-  const how = (a) => (a.mode === 'pad2' ? 'P1 + P2 ON CONTROLLERS' : a.mode === 'pad1' ? 'P1 KEYBOARD & MOUSE · P2 CONTROLLER' : 'P1 WASD + MOUSE · P2 ARROW KEYS');
-  const render = () => { el.innerHTML = `<button class="pt ${n === 1 ? 'on' : ''}" data-n="1">1 PLAYER</button><button class="pt ${n === 2 ? 'on' : ''}" data-n="2">2 PLAYERS</button><span class="pt-note">${n === 2 ? 'SPLIT SCREEN · ' + how(assign) : ''}</span>`;
-    el.querySelectorAll('.pt').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); n = +b.dataset.n; onChange(n); render(); }; }); };
-  render();
+  const how = (a) => (a.mode === 'pad2' ? 'P1 + P2 ON CONTROLLERS' : 'P1 KEYBOARD & MOUSE · P2 CONTROLLER');
+  // 2 players needs at least one controller (one keyboard and mouse can't run two full sets of controls)
+  const render = () => {
+    const a = getAssign(), two = n === 2 && !!a;
+    el.innerHTML = `<button class="pt ${!two ? 'on' : ''}" data-n="1">1 PLAYER</button><button class="pt ${two ? 'on' : ''} ${a ? '' : 'off'}" data-n="2" ${a ? '' : 'disabled'}>2 PLAYERS</button><span class="pt-note">${two ? 'SPLIT SCREEN · ' + how(a) : a ? '' : 'CONNECT A CONTROLLER FOR 2 PLAYERS'}</span>`;
+    el.querySelectorAll('.pt').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); if (b.disabled) return; n = +b.dataset.n; onChange(n); render(); }; });
+  };
+  el._render = render; render();
+  if (!el.dataset.bound) { el.dataset.bound = '1'; for (const ev of ['gamepadconnected', 'gamepaddisconnected']) window.addEventListener(ev, () => setTimeout(() => el._render && el._render(), 50)); }
 }
 export function hideModes() { $('screen-modes').classList.remove('show'); hide('screen-modes'); }
 
@@ -167,7 +172,6 @@ export function openControls(mobile, onClose, input = null) {
   const touchRows = [['Move', 'Left joystick (push to the edge to sprint)'], ['Look', 'Drag anywhere on the right half'], ['Fire', 'Red button (drag it to aim while firing)'], ['ADS', 'ADS button (toggle)'], ['Jump / Duck / Peek', 'Buttons above fire'], ['Prone / Slide', 'Double-tap DUCK to go prone · DUCK while running to slide'], ['Swap / Reload', 'Small buttons'], ['Lethal / Tactical', 'LETHAL and TAC buttons'], ['Score streaks', 'Tap the streak icons bottom-left'], ['Scoreboard', 'SCORE button at the top']];
   const kbRows = controlRows('kb'), padRows = controlRows('pad', input ? input.padType : 'xbox');
   const tabs = [[mobile ? 'TOUCH' : 'KEYBOARD & MOUSE', mobile ? touchRows : kbRows], ['CONTROLLER', padRows]];
-  if (!mobile) tabs.push(['PLAYER 2 KEYS', P2_KEY_ROWS]); // split screen, keyboard only
   let cur = input && input.padActive ? 1 : 0;
   const render = () => {
     $('dialog-body').innerHTML = `<div class="ctl-tabs">${tabs.map((tb, i) => `<button class="ctl-tab ${i === cur ? 'on' : ''}" data-i="${i}">${tb[0]}</button>`).join('')}</div>${cur === 1 ? '<div class="ctl-note">PS5 DualSense and Xbox controllers supported. Plug in or pair, then press any button.</div>' : ''}<table class="controls-table">${tabs[cur][1].map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>`;

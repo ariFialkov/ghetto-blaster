@@ -41,7 +41,7 @@ const DEBUG_TIME = params.has('t') ? Math.max(20, +params.get('t')) : 0; // ?t=6
 const FORCE_MAP = MAPS.some((m) => m.id === params.get('map')) ? params.get('map') : null; // ?map=kowloon
 const app = { state: 'boot', mapData: null, mapId: null, match: null, cin: null, mode: null, bet: 0, pick: null, lobbyTimers: [] };
 // 2-player split screen (desktop only), remembered between sessions
-const splitOn = () => !input.mobile && !!save.split;
+const splitOn = () => !input.mobile && !!save.split && !!splitAssignment(); // needs at least one controller
 if (input.mobile) document.body.classList.add('mobile');
 
 // ---------------- PWA ----------------
@@ -112,7 +112,7 @@ for (const src of MODE_ARTS) { const im = new Image(); im.src = src; } // warm t
 function enterModes() {
   app.state = 'modes'; initAudio(); sfx('ui');
   UI.showModes(MODE_ARTS, save.wallet, (mode) => enterLobby(mode));
-  if (!input.mobile) UI.playersToggle(save.split ? 2 : 1, (n) => { save.split = n === 2; persist(); sfx('click'); }, splitAssignment());
+  if (!input.mobile) UI.playersToggle(save.split ? 2 : 1, (n) => { save.split = n === 2; persist(); sfx('click'); }, splitAssignment);
 }
 
 // ---------------- lobby ----------------

@@ -223,12 +223,12 @@ export class Input {
 }
 
 /** Who plays with what in split screen: two controllers = one each; one = it goes to player 2 (player 1 keeps
- *  keyboard and mouse); none = player 2 on the right-hand side of the keyboard. */
+ *  keyboard and mouse). None = no split screen: two full sets of controls can't share one keyboard and mouse. */
 export function splitAssignment() {
   const pads = [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter((p) => p && p.connected);
   if (pads.length >= 2) return { mode: 'pad2', p1: pads[0].index, p2: pads[1].index };
   if (pads.length === 1) return { mode: 'pad1', p1: null, p2: pads[0].index };
-  return { mode: 'kbd', p1: null, p2: null };
+  return null;
 }
 // player 2 keyboard one-shot actions (right-hand side of the keyboard)
 export const P2_KEYS = { KeyO: 'jump', Semicolon: 'crouch', KeyU: 'reload', KeyP: 'swap', KeyN: 'lethal', KeyM: 'tactical', Digit7: 'streak1', Digit8: 'streak2', Digit9: 'streak3', Digit0: 'score', ShiftRight: '_', Slash: '_', KeyH: '_', KeyI: '_', KeyJ: '_', KeyK: '_', KeyL: '_', ArrowUp: '_', ArrowDown: '_', ArrowLeft: '_', ArrowRight: '_' };

@@ -319,7 +319,7 @@ export class Match {
     this.endResult = { ...result, rank, mode: this.mode, bet: this.bet, log: this.director.log };
     this.emit('end', this.endResult);
   }
-  dispose() { for (const h of this.players) if (h.view) { h.vmCamera.remove(h.view.root); if (h.view.freeRig) h.vmCamera.remove(h.view.freeRig); } if (this.split && this.engine.setViews) this.engine.setViews(null); for (const a of this.actors) a.dispose(); this.projectiles.clear(); this.fx.clear(); for (const c of this.cars) this.scene.remove(c.mesh); if (this.heli) this.scene.remove(this.heli.mesh); this.scene.remove(this.map.group); }
+  dispose() { for (const h of this.players) if (h.view) h.view.dispose(); if (this.split && this.engine.setViews) this.engine.setViews(null); for (const a of this.actors) a.dispose(); this.projectiles.clear(); this.fx.clear(); for (const c of this.cars) this.scene.remove(c.mesh); if (this.heli) this.scene.remove(this.heli.mesh); this.scene.remove(this.map.group); }
   // ---------------- audio ----------------
   audio(name, actor, pos, opts = {}) {
     if (name === 'none') return;

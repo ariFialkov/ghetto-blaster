@@ -460,3 +460,4 @@ body.split #minimap { width: 140px; height: 140px; }
 .sl-ready.focus { border-color: var(--accent2); background: rgba(242, 180, 30, 0.16); color: var(--accent2); }
 .sl-ready.on { border-color: #34d399; background: rgba(52, 211, 153, 0.16); color: #34d399; letter-spacing: 0.12em; font-size: 15px; }
 body.split .reopen-loadout { display: none; } /* split screen: each player has their own loadout panel */
+.players-toggle .pt.off { opacity: 0.4; cursor: not-allowed; }
